@@ -93,7 +93,8 @@ class Game:
             score_multiplier = 1.3
         else:
             score_multiplier = 2.0
-
+        # TODO: Add a bonus for finishing earlier, based on 
+        # number of years before age of 65.
         self.final_score = net_worth * score_multiplier
 
 if __name__ == '__main__':
