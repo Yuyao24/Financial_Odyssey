@@ -223,7 +223,7 @@ class LifeGame:
 
         self.event_deck = []
         self.last_event_key = None
-        self.current_event = None
+        self.current_event: dict | None = None
         self.state = "start"            # start, main, event, game_over
         self.end_reason = ""
         self.log = []
@@ -1171,9 +1171,9 @@ class LifeGame:
                 self.popups.append(v)
 
     def choose_option(self, idx):
-        if self.state != "event":
-            return False, ""
         ev = self.current_event
+        if self.state != "event" or ev is None:
+            return False, ""
         o = ev["options"][idx]
         reason = self.option_block_reason(o)
         if reason:
@@ -2080,7 +2080,8 @@ class Toast(QFrame):
         dot = {"bad": "#F87171", "good": "#4ADE80", "gold": "#FACC15"}.get(tone, "#818CF8")
         self.dot.setStyleSheet(f"background:{dot}; border-radius:8px;")
         self.lbl.setText(text)
-        pw = self.parentWidget().width()
+        parent = self.parentWidget()
+        pw = parent.width() if parent is not None else CANVAS["mobile"][0]
         w = min(900, pw - 80)
         h = self.lbl.heightForWidth(w - 92) + 40
         self.setGeometry((pw - w) // 2, 28, w, max(80, h))
@@ -2167,7 +2168,8 @@ class CoachOverlay(QWidget):
 
     def _hole_path(self):
         path = QPainterPath()
-        path.addRoundedRect(self.hole, self.HOLE_RADIUS, self.HOLE_RADIUS)
+        if self.hole is not None:
+            path.addRoundedRect(self.hole, self.HOLE_RADIUS, self.HOLE_RADIUS)
         return path
 
     def _hole_region(self):
@@ -3249,6 +3251,7 @@ class GameUI(QWidget):
         self.win = win
         self.mode = mode
         desktop = mode == "desktop"
+        self.desktop = desktop
         cw, ch = CANVAS[mode]
         self.setObjectName("root")
         self.setFixedSize(cw, ch)
@@ -3310,7 +3313,17 @@ class GameUI(QWidget):
         self.win.save_game()
         self.win.page = "menu"
         self.win.has_save = self.win.save_exists()
-        self.win.rebuild_later()
+        self.event_overlay.hide()
+        self.tut.coach.hide()
+        self.popup.hide()
+        self.popup_queue.clear()
+        # rebuild only the start page (its saved-game card changed) and switch to it
+        old = self.start_page
+        self.start_page = StartPage(self, self.desktop)
+        self.stack.insertWidget(0, self.start_page)
+        self.stack.setCurrentWidget(self.start_page)
+        self.stack.removeWidget(old)
+        old.deleteLater()
 
     def open_settings(self):
         self.tut.coach.hide()
@@ -3447,6 +3460,22 @@ class ScaledView(QGraphicsView):
         self.proxy = self.scene_.addWidget(root)
         self.setScene(self.scene_)
         self.setSceneRect(0, 0, cw, ch)
+        self._setup()
+
+    def set_root(self, root, cw, ch):
+        """Replace the canvas without recreating the view, so nothing flashes black."""
+        self.setUpdatesEnabled(False)
+        old = self.scene_
+        self.cw, self.ch = cw, ch
+        self.scene_ = QGraphicsScene(self)
+        self.proxy = self.scene_.addWidget(root)
+        self.setScene(self.scene_)
+        self.setSceneRect(0, 0, cw, ch)
+        self._fit()
+        self.setUpdatesEnabled(True)
+        old.deleteLater()                     # deletes the old UI with it
+
+    def _setup(self):
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing |
                             QPainter.RenderHint.SmoothPixmapTransform)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
@@ -3458,7 +3487,13 @@ class ScaledView(QGraphicsView):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        s = min(self.viewport().width() / self.cw, self.viewport().height() / self.ch)
+        self._fit()
+
+    def _fit(self):
+        vp = self.viewport()
+        if vp is None or vp.width() <= 0 or vp.height() <= 0:
+            return
+        s = min(vp.width() / self.cw, vp.height() / self.ch)
         self.setTransform(QTransform.fromScale(s, s))
         self.centerOn(self.cw / 2, self.ch / 2)
 
@@ -3515,6 +3550,7 @@ class MainWindow(QMainWindow):
         self.has_save = self.game.state in ("main", "event")
         self.page = "menu"
         self.ui = None
+        self.view = None
 
         self.setMinimumSize(320, 320)
         self.rebuild()
@@ -3556,7 +3592,8 @@ class MainWindow(QMainWindow):
             pass
 
     def restart_new_game(self):
-        self.ui.new_game()
+        if self.ui is not None:
+            self.ui.new_game()
 
     def closeEvent(self, e):
         self.save_game()
@@ -3571,7 +3608,11 @@ class MainWindow(QMainWindow):
         self.ui = GameUI(self, mode)
         self.ui.popup_queue[:0] = carry
         cw, ch = CANVAS[mode]
-        self.setCentralWidget(ScaledView(self.ui, cw, ch))
+        if self.view is None:
+            self.view = ScaledView(self.ui, cw, ch)
+            self.setCentralWidget(self.view)
+        else:
+            self.view.set_root(self.ui, cw, ch)
         if reopen_settings:
             self.ui.open_settings()
         else:
@@ -3600,7 +3641,10 @@ class MainWindow(QMainWindow):
         if self.isFullScreen() or self.isMaximized():
             return
         cw, ch = CANVAS.get(self.settings["layout"], CANVAS["mobile"])
-        scr = (self.screen() or QGuiApplication.primaryScreen()).availableGeometry()
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:                    # no display information available
+            return
+        scr = screen.availableGeometry()
         h = int(scr.height() * 0.90)
         w = int(h * cw / ch)
         if w > scr.width() * 0.92:
