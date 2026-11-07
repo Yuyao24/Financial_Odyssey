@@ -3,44 +3,70 @@
 Imports the real LifeGame class (so event/turn logic is exactly the shipped code)
 and re-implements the dashboard quick actions exactly as written in main().
 """
-import os, sys, random, statistics
+import os
+import sys
+import random
+import statistics
 from unittest.mock import MagicMock
+
 # Stub pygame entirely: we only need the pure-logic LifeGame class.
 _pg = MagicMock()
 _pg.display.Info.return_value.current_w = 1080
 _pg.display.Info.return_value.current_h = 1920
 sys.modules["pygame"] = _pg
-sys.path.insert(0, "/Users/afeefurr/Documents/GitHub/WHACK_Project")
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 import main as M  # noqa: E402
 
 LifeGame = M.LifeGame
 LifeGame.build_event_buttons = lambda self: None  # UI only; avoids MagicMock overhead
 
 
-# ---- exact copies of dashboard quick actions from main() ----
+# ---- dashboard quick actions from main.py ----
 def groceries(g):
-    if g.cash >= 300:
-        g.cash -= 300; g.health = min(100, g.health + 20); return True
-    return False
+    return g.buy_groceries()
+
 
 def spa(g):
-    if g.cash >= 800:
-        g.cash -= 800; g.health = min(100, g.health + 50); return True
-    return False
+    return g.buy_spa()
+
 
 def pay_debt(g):
-    if g.cash >= 500 and g.debt > 0:
-        pay = min(500, g.debt); g.cash -= pay; g.debt -= pay; g.update_credit(20); return True
-    return False
+    return g.quick_pay_debt()
+
 
 def invest(g):
-    if g.cash >= 500:
-        g.cash -= 500; g.investments += 500; g.update_credit(10); return True
-    return False
+    return g.quick_invest()
+
+
+def withdraw(g, amount=500):
+    return g.quick_withdraw(amount)
+
+
+def declare_bankruptcy(g):
+    return g.declare_bankruptcy()
 
 
 def score(g):
-    return int(g.get_net_worth() + g.credit_score * 50)
+    return g.final_score()
+
+
+def valid_actions(g):
+    return [act for _, act in g.current_event["options"] if g.option_block_reason(act) is None]
+
+
+def choose_safe(g, preferred_action):
+    """Pick preferred_action if allowed; otherwise fall back to a valid option."""
+    if g.option_block_reason(preferred_action) is None:
+        return preferred_action
+    available = valid_actions(g)
+    if available:
+        # The last option is typically pass/skip/gamble (always free)
+        return available[-1]
+    return "pass"
 
 
 def opt_index(g, action):
@@ -51,68 +77,170 @@ def opt_index(g, action):
 # Each strategy: event(g) -> action string ; main(g) -> performs quick actions
 
 class Idle:
-    """Never touches dashboard, always picks the 3rd (bottom) option."""
+    """Never touches dashboard, always picks the bottom (3rd) option."""
     name = "Idle (spam bottom option, no upkeep)"
-    def event(self, g): return g.current_event["options"][2][1]
-    def main(self, g): pass
+
+    def event(self, g):
+        return g.current_event["options"][-1][1]
+
+    def main(self, g):
+        pass
+
 
 class Hoarder:
     """Keeps health topped with groceries, never invests, pays cash, skips extras."""
     name = "Hoarder (groceries to stay >=50 HP, no investing)"
+
     def event(self, g):
         t = g.current_event["title"]
-        return {"Medical Checkup & Care": "skip_med", "Stock Market Trend": "pass",
-                "Car Maintenance": "fix_car_cash", "Luxury Vacation Offer": "vacation_skip",
-                "Career Certification": "pass", "Debt Consolidation Offer": "pay_debt_1000"}[t]
+        c = g.event_costs
+        if t == "Medical Checkup & Care":
+            return "skip_med"
+        if t == "Stock Market Trend":
+            return "pass"
+        if t == "Car Maintenance":
+            return "fix_car_cash" if g.cash >= c.get("car", 800) else "sell_car"
+        if t == "Commuting Without a Car":
+            return "buy_car_cash" if g.cash >= c.get("used_car", 3000) else "bus"
+        if t == "Luxury Vacation Offer":
+            return "vacation_skip"
+        if t == "Career Certification":
+            return "pass"
+        if t == "Debt Consolidation Offer":
+            return "pay_debt_now" if g.debt > 0 and g.cash >= c.get("pay", 0) else "pass"
+        if t == "Layoff Notice":
+            return "layoff_severance"
+        return g.current_event["options"][-1][1]
+
     def main(self, g):
-        while g.health < 50 and groceries(g): pass
-        while g.debt > 0 and pay_debt(g): pass
+        while g.health < 50 and groceries(g):
+            pass
+        while g.debt > 0 and pay_debt(g):
+            pass
+
 
 class Responsible:
     """'Intended' play: healthy (>=70 HP), pays cash, takes course w/ cash,
-    keeps a $3k emergency fund, invests the rest."""
-    name = "Responsible (HP>=70, cash buffer $3k, invest surplus)"
+    keeps a cash buffer for emergencies, invests the rest."""
+    name = "Responsible (HP>=70, cash buffer, invest surplus)"
+
     def event(self, g):
         t = g.current_event["title"]
-        if t == "Medical Checkup & Care": return "pay_med" if g.cash >= 600 else "skip_med"
-        if t == "Stock Market Trend": return "invest_index" if g.cash >= 1000 else "pass"
-        if t == "Car Maintenance": return "fix_car_cash"
-        if t == "Luxury Vacation Offer": return "vacation_cash" if g.cash >= 4000 else "vacation_skip"
-        if t == "Career Certification": return "course_cash" if g.cash >= 1200 else "pass"
-        return "pay_debt_1000" if g.debt > 0 else "pass"
+        c = g.event_costs
+        if t == "Medical Checkup & Care":
+            if g.cash >= c.get("med", 600):
+                return "pay_med"
+            if g.credit_score >= g.LOAN_MIN_CREDIT and not g.in_collections:
+                return "debt_med"
+            return "skip_med"
+        if t == "Stock Market Trend":
+            return "invest_index" if g.cash >= c.get("invest", 1000) + 3000 else "pass"
+        if t == "Car Maintenance":
+            if g.cash >= c.get("car", 800):
+                return "fix_car_cash"
+            if g.credit_score >= g.LOAN_MIN_CREDIT and not g.in_collections:
+                return "fix_car_loan"
+            return "sell_car"
+        if t == "Commuting Without a Car":
+            if g.cash >= c.get("used_car", 3000):
+                return "buy_car_cash"
+            if g.credit_score >= g.LOAN_MIN_CREDIT and not g.in_collections:
+                return "buy_car_loan"
+            return "bus"
+        if t == "Luxury Vacation Offer":
+            return "vacation_cash" if g.cash >= c.get("vacation", 1500) + 4000 else "vacation_skip"
+        if t == "Career Certification":
+            if g.courses_taken < g.MAX_COURSES and g.cash >= c.get("course", 1200) + 1500:
+                return "course_cash"
+            return "pass"
+        if t == "Debt Consolidation Offer":
+            if g.debt > 0 and g.cash >= c.get("pay", 0):
+                return "pay_debt_now"
+            if (g.debt > 1500 and g.refi_turns == 0 and g.cash >= c.get("refi_fee", 250)
+                    and g.credit_score >= g.REFI_MIN_CREDIT):
+                return "refinance"
+            return "pass"
+        if t == "Layoff Notice":
+            return "layoff_severance"
+        return g.current_event["options"][-1][1]
+
     def main(self, g):
-        while g.health < 70 and groceries(g): pass
-        while g.debt > 0 and pay_debt(g): pass
-        while g.cash - 500 >= 3000 and invest(g): pass
+        while g.health < 70 and groceries(g):
+            pass
+        while g.debt > 0 and pay_debt(g):
+            pass
+        buffer = max(3000, g.living_expense() * 2)
+        while g.cash - 500 >= buffer and invest(g):
+            pass
+
 
 class Cheese:
-    """Min-max: health floor exploit, sell car, always course (loan), all-in invest."""
+    """Min-max: health floor exploit, sell car, always course (cash/loan), all-in invest."""
     name = "Min-max cheese (0-HP cycling, sell car, course loans, all-in)"
+
     def event(self, g):
         t = g.current_event["title"]
-        if t == "Medical Checkup & Care": return "skip_med"
-        if t == "Stock Market Trend": return "invest_index" if g.cash >= 1000 else "pass"
-        if t == "Car Maintenance": return "sell_car"
-        if t == "Luxury Vacation Offer": return "vacation_skip"
-        if t == "Career Certification": return "course_cash" if g.cash >= 1200 else "course_loan"
-        return "pay_debt_1000" if g.debt > 0 else "pass"
+        c = g.event_costs
+        if t == "Medical Checkup & Care":
+            return "skip_med"
+        if t == "Stock Market Trend":
+            return "invest_index" if g.cash >= c.get("invest", 1000) else "pass"
+        if t == "Car Maintenance":
+            return "sell_car"
+        if t == "Commuting Without a Car":
+            return "bus"
+        if t == "Luxury Vacation Offer":
+            return "vacation_skip"
+        if t == "Career Certification":
+            if g.courses_taken >= g.MAX_COURSES:
+                return "pass"
+            if g.cash >= c.get("course", 1200):
+                return "course_cash"
+            if g.credit_score >= g.COURSE_LOAN_MIN_CREDIT and not g.in_collections:
+                return "course_loan"
+            return "pass"
+        if t == "Debt Consolidation Offer":
+            return "pay_debt_now" if g.debt > 0 and g.cash >= c.get("pay", 0) else "pass"
+        if t == "Layoff Notice":
+            return "layoff_severance"
+        return g.current_event["options"][-1][1]
+
     def main(self, g):
-        # health only needs to be >0 once every 4 checks; next check subtracts 15
-        if g.zero_health_turns >= 3 and g.health < 16:
-            while g.health < 16 and groceries(g): pass
-        while g.debt > 0 and pay_debt(g): pass
-        while invest(g): pass
+        # 0-HP cycling: zero_health_turns kills at 4 strikes.
+        # Recover before the fatal 4th strike:
+        if g.zero_health_turns >= 3 and g.health <= 0:
+            while g.health < 20 and groceries(g):
+                pass
+        while g.debt > 0 and pay_debt(g):
+            pass
+        while invest(g):
+            pass
+
 
 class CheeseNoSell(Cheese):
     name = "Min-max cheese WITHOUT selling car"
+
     def event(self, g):
-        a = super().event(g)
-        return "fix_car_cash" if a == "sell_car" and g.cash >= 800 else ("fix_car_loan" if a == "sell_car" else a)
+        t = g.current_event["title"]
+        c = g.event_costs
+        if t == "Car Maintenance":
+            if g.cash >= c.get("car", 800):
+                return "fix_car_cash"
+            if g.credit_score >= g.LOAN_MIN_CREDIT and not g.in_collections:
+                return "fix_car_loan"
+            return "sell_car"
+        if t == "Commuting Without a Car":
+            if g.cash >= c.get("used_car", 3000):
+                return "buy_car_cash"
+            if g.credit_score >= g.LOAN_MIN_CREDIT and not g.in_collections:
+                return "buy_car_loan"
+            return "bus"
+        return super().event(g)
 
 
 def run(strategy, seed):
     random.seed(seed)
-    g = LifeGame()
+    g = LifeGame(seed=seed)
     g.state = "main"
     turns = 0
     credit_max_turn = None
@@ -120,12 +248,27 @@ def run(strategy, seed):
         strategy.main(g)
         if credit_max_turn is None and g.credit_score >= 1000:
             credit_max_turn = turns
-        g.next_turn(); turns += 1
+        g.next_turn()
+        turns += 1
         if g.state == "event":
-            g.handle_choice(strategy.event(g))
-    return dict(score=score(g), reason=g.death_reason, age=g.age_years, nw=g.get_net_worth(),
-                credit=g.credit_score, income=g.base_income, turns=turns,
-                credit_max_turn=credit_max_turn)
+            act = strategy.event(g)
+            act = choose_safe(g, act)
+            g.handle_choice(act)
+    return dict(
+        score=score(g),
+        reason=g.death_reason,
+        age=g.age_years,
+        nw=g.get_net_worth(),
+        credit=g.credit_score,
+        income=g.quarterly_income(),
+        base_income=g.base_income,
+        cash=g.cash,
+        debt=g.debt,
+        investments=g.investments,
+        courses=g.courses_taken,
+        turns=turns,
+        credit_max_turn=credit_max_turn,
+    )
 
 
 def summarize(strategy, n=2000):
