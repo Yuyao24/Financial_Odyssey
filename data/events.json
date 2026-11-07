@@ -1,0 +1,78 @@
+[
+    {
+        "id": "car_breakdown",
+        "title": "Emergency Car Breakdown",
+        "description": "Your alternator gave up on the dual carriageway. The garage bill is £600.",
+        "plain_description": "Your car broke down. Repairs cost £600 to keep it working.",
+        "choices": [
+            {
+                "text": "Pay with cash from your account",
+                "plain_text": "Pay £600 in cash",
+                "effect": {
+                    "cash": -600,
+                    "card": 0,
+                    "happiness": -5
+                }
+            },
+            {
+                "text": "Put £600 on your credit card",
+                "plain_text": "Charge £600 to your credit card",
+                "effect": {
+                    "cash": 0,
+                    "card": 600,
+                    "happiness": 0
+                }
+            }
+        ]
+    },
+    {
+        "id": "phishing_scam",
+        "title": "Suspicious Bank Message",
+        "description": "You receive a text: 'Unauthorised £350 charge. Click here to verify your account credentials immediately.'",
+        "plain_description": "A text message asks you to urgently click a link to stop a fake charge.",
+        "choices": [
+            {
+                "text": "Click link and type account credentials",
+                "plain_text": "Click the link and log in",
+                "effect": {
+                    "cash": -350,
+                    "card": 0,
+                    "happiness": -20
+                }
+            },
+            {
+                "text": "Report as phishing and ignore",
+                "plain_text": "Report text as a scam and delete it",
+                "effect": {
+                    "cash": 0,
+                    "card": 0,
+                    "happiness": 5
+                }
+            }
+        ]
+    },
+    {
+        "id": "card_limit_offer",
+        "title": "Pre-Approved Credit Limit Increase",
+        "description": "Your bank offers to double your credit card limit from £1,200 to £2,400 with no hard inquiry.",
+        "plain_description": "Your bank offers to let you borrow up to £2,400 instead of £1,200.",
+        "choices": [
+            {
+                "text": "Accept the limit increase",
+                "plain_text": "Accept the higher limit",
+                "effect": {
+                    "card_limit": 1200,
+                    "happiness": 5
+                }
+            },
+            {
+                "text": "Decline the offer",
+                "plain_text": "Keep current limit",
+                "effect": {
+                    "card_limit": 0,
+                    "happiness": 0
+                }
+            }
+        ]
+    }
+]
