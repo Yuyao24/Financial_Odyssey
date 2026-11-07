@@ -1,4 +1,5 @@
 import random
+from typing import Optional
 from game.state import Player, Loan
 
 SAVINGS_APY = 0.03
