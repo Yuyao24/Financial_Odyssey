@@ -1,1111 +1,2382 @@
+#!/usr/bin/env python3
+"""
+Financial Odyssey: 18 to 65  —  PyQt6 edition
+
+Layout strategy (consistent on every screen / aspect ratio):
+  The whole UI is built once on a fixed 1080 x 1920 (9:16) virtual canvas with
+  pixel-sized fonts. That canvas lives inside a QGraphicsView and is scaled
+  uniformly (vector scaling, so text stays sharp) and centred, with black bars
+  filling any leftover space. Every device therefore sees the exact same layout,
+  and text that fits once fits everywhere. On top of that, all long text uses
+  word-wrapping and single-line values auto-shrink to fit their boxes.
+
+Controls:  F11 = toggle fullscreen,  Esc = leave fullscreen.
+"""
+import html
 import math
-import pygame
 import random
 import sys
 
-# Initialize Pygame
-pygame.init()
-
-# 1080x1920 portrait virtual screen resolution with black bars
-VIRTUAL_WIDTH = 1080
-VIRTUAL_HEIGHT = 1920
-
-# Display Setup
-screen_info = pygame.display.Info()
-DISPLAY_WIDTH = screen_info.current_w
-DISPLAY_HEIGHT = screen_info.current_h
-
-# Calculate scaling to fit 1080x1920 inside the display with black bars
-TARGET_ASPECT = VIRTUAL_WIDTH / VIRTUAL_HEIGHT
-SCREEN_ASPECT = DISPLAY_WIDTH / DISPLAY_HEIGHT
-
-if SCREEN_ASPECT > TARGET_ASPECT:
-    # Screen is wider than target aspect ratio (pillarboxing)
-    WINDOW_HEIGHT = DISPLAY_HEIGHT
-    WINDOW_WIDTH = int(DISPLAY_HEIGHT * TARGET_ASPECT)
-else:
-    # Screen is taller than target aspect ratio (letterboxing)
-    WINDOW_WIDTH = DISPLAY_WIDTH
-    WINDOW_HEIGHT = int(DISPLAY_WIDTH / TARGET_ASPECT)
-
-window = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-pygame.display.set_caption("Financial Odyssey: 18 to 65")
-
-virtual_surface = pygame.Surface((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
-
-# Colors
-BLACK = (10, 15, 25)
-WHITE = (245, 245, 250)
-GREEN = (46, 204, 113)
-DARK_GREEN = (39, 174, 96)
-RED = (231, 76, 60)
-DARK_RED = (192, 57, 43)
-BLUE = (54, 162, 235)
-DARK_BLUE = (41, 128, 185)
-YELLOW = (241, 196, 15)
-DARK_YELLOW = (212, 143, 0)
-ORANGE = (230, 126, 34)
-PURPLE = (155, 89, 182)
-GRAY = (149, 165, 166)
-DARK_GRAY = (52, 73, 94)
-CARD_BG = (34, 45, 62)
-BG_COLOR = (18, 26, 38)
-ACCENT = (255, 215, 0)
-
-# Fonts
-try:
-    FONT_TITLE = pygame.font.SysFont("arial", 60, bold=True)
-    FONT_HEADER = pygame.font.SysFont("arial", 42, bold=True)
-    FONT_MEDIUM = pygame.font.SysFont("arial", 32, bold=True)
-    FONT_REGULAR = pygame.font.SysFont("arial", 24)
-    FONT_SMALL = pygame.font.SysFont("arial", 19)
-except:
-    FONT_TITLE = pygame.font.Font(None, 60)
-    FONT_HEADER = pygame.font.Font(None, 42)
-    FONT_MEDIUM = pygame.font.Font(None, 32)
-    FONT_REGULAR = pygame.font.Font(None, 24)
-    FONT_SMALL = pygame.font.Font(None, 19)
-
-CLICK_COOLDOWN_MS = 200
+from PyQt6.QtCore import Qt, QTimer, QRectF, QRect
+from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QPainter, QPen, QBrush,
+                         QGuiApplication, QTransform, QShortcut, QKeySequence)
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QFrame, QLabel,
+                             QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
+                             QStackedWidget, QGraphicsView, QGraphicsScene,
+                             QSpinBox, QCheckBox, QScrollArea, QSizePolicy)
 
 
-class Button:
-    def __init__(self, x, y, w, h, text, color=BLUE, hover_color=DARK_BLUE, font=None, text_color=WHITE):
-        self.rect = pygame.Rect(x, y, w, h)
-        self.text = text
-        self.color = color
-        self.hover_color = hover_color
-        self.font = font or FONT_REGULAR
-        self.text_color = text_color
-        self.hovered = False
-        self.enabled = True
-
-    def draw(self, surface):
-        draw_color = DARK_GRAY if not self.enabled else (self.hover_color if self.hovered else self.color)
-
-        shadow_rect = self.rect.copy()
-        shadow_rect.x += 4
-        shadow_rect.y += 4
-        pygame.draw.rect(surface, (0, 0, 0, 150), shadow_rect, border_radius=16)
-        pygame.draw.rect(surface, draw_color, self.rect, border_radius=16)
-        pygame.draw.rect(surface, WHITE if self.hovered and self.enabled else draw_color, self.rect, 3, border_radius=16)
-
-        words = self.text.split()
-        lines = []
-        curr_line = ""
-        for w in words:
-            test = curr_line + (" " if curr_line else "") + w
-            if self.font.size(test)[0] < self.rect.width - 25:
-                curr_line = test
-            else:
-                lines.append(curr_line)
-                curr_line = w
-        if curr_line:
-            lines.append(curr_line)
-
-        line_height = self.font.get_linesize()
-        start_y = self.rect.centery - (len(lines) * line_height) // 2
-        for i, line in enumerate(lines):
-            ts = self.font.render(line, True, self.text_color if self.enabled else GRAY)
-            tr = ts.get_rect(center=(self.rect.centerx, start_y + i * line_height + line_height // 2))
-            surface.blit(ts, tr)
-
-    def check_hover(self, pos):
-        self.hovered = self.rect.collidepoint(pos) and self.enabled
-        return self.hovered
-
-    def is_clicked(self, pos, click):
-        return self.enabled and self.rect.collidepoint(pos) and click
+def money(v):
+    v = int(v)
+    return f"-${abs(v):,}" if v < 0 else f"${v:,}"
 
 
+def esc(text):
+    return html.escape(str(text))
+
+
+# =============================================================================
+#                                GAME ENGINE
+# =============================================================================
 class LifeGame:
-    START_INCOME = 3500            # Quarterly income
-    GROCERY_BASE = 1400           # Compulsory quarterly expenses
-    HAPPINESS_BUY_COST = 800       # Option to boost happiness ($800 for +30 Happiness)
-    HAPPINESS_BUY_PTS = 30
-    INFLATION_QTR = 0.007          # Quarterly inflation
-    RAISE_QTR = 0.003              # Slow income growth
-    
-    CREDIT_CARD_LIMIT = 3000       # Initial credit limit
-    OVERDRAFT_LIMIT = 1000         # Bank overdraft limit
+    # ---- Economy (all amounts per quarter; 1 turn = 3 months) ---------------
+    START_CASH = 800
+    START_INCOME = 5200            # take-home pay per quarter at 18
+    RENT_BASE = 2300               # compulsory
+    FOOD_BASE = 1000               # compulsory groceries
+    UTIL_BASE = 550                # compulsory transport & utilities
+    NO_CAR_SAVING = 150            # transit is a bit cheaper than running a car
+    PET_COST = 120
+    LIFESTYLE_CREEP = 0.30         # 30% of every raise is eaten by a pricier lifestyle
+    INFLATION_QTR = 0.0075         # ~3% / year
+    RAISE_QTR = 0.006              # ~2.4% / year (slower than inflation!)
 
-    INVEST_RANGE = (-0.05, 0.08)
-    CRASH_CHANCE = 1 / 25
-    CRASH_RANGE = (0.20, 0.40)
+    HAPPY_COST = 900               # the ONE way to buy happiness on the dashboard
+    HAPPY_PTS = 20
+
+    # ---- Banking ------------------------------------------------------------
+    OVERDRAFT_LIMIT = 1000
+    OVERDRAFT_FEE = 35
+    OVERDRAFT_RATE = 0.05
+    OVER_LIMIT_FEE = 35
+    COLLECTIONS_FEE = 0.15
+    LOAN_ORIGINATION = 0.02
+    CARD_MIN_PCT = 0.10
+    LOAN_MIN_PCT = 0.08
+    MIN_PAYMENT_FLOOR = 50
+    LOAN_MIN_SCORE = 450
+
+    # (min score, tier name, loan rate/qtr, card rate/qtr, card limit, max total loans)
+    TIERS = [
+        (800, "Excellent", 0.0125, 0.035, 12000, 60000),
+        (700, "Good",      0.0175, 0.045,  8000, 30000),
+        (600, "Fair",      0.0250, 0.055,  5000, 15000),
+        (450, "Poor",      0.0350, 0.065,  3000,  6000),
+        (0,   "Very Poor", 0.0475, 0.075,  1000,     0),
+    ]
+    HISTORY_CAP_TURNS = 20         # 5 years of history ...
+    HISTORY_CAP = 700              # ... before you can pass 700
+    IRS_SCORE = 300
+    IRS_TURNS = 8
+    DEPRESSION_TURNS = 4
+
+    # ---- Investing ----------------------------------------------------------
+    INVEST_RANGE = (-0.035, 0.075)
+    CRASH_CHANCE = 1 / 48
+    CRASH_RANGE = (0.15, 0.35)
     EARLY_WITHDRAW_PENALTY = 0.05
+    PENALTY_FREE_AGE = 60
 
     MAX_COURSES = 5
-    COURSE_BASE_COST = 1400
-    COURSE_BASE_BONUS = 600
+    COURSE_BASE_COST = 1500
+    COURSE_BONUS = 550
 
+    MILLION = 1_000_000
     DEATH_PENALTY = 100_000
 
-    EVENT_DECK = (["leisure"] * 3 + ["market"] * 2 + ["car"] * 2 + ["vacation"] * 2 +
-                  ["course"] * 2 + ["debt"] * 2 + ["credit_edu"] * 3 + ["layoff"] * 2)
+    EVENT_DECK = {
+        "festival": 3, "market": 2, "car": 2, "vacation": 2, "course": 3,
+        "credit_quiz": 3, "layoff": 1, "medical": 2, "phone": 2, "rent_hike": 1,
+        "side_hustle": 2, "wedding": 2, "tax_refund": 1, "limit_offer": 1,
+        "identity_theft": 1, "pet": 1, "review": 2, "crypto": 1, "inheritance": 1,
+        "accident": 1, "scam": 1, "dip": 1, "bonus": 1, "debt_offer": 1,
+    }
+
+    ACHIEVEMENTS = {
+        "first_swipe":  ("First Swipe", "Used your credit card for the first time"),
+        "on_time":      ("Responsible Borrower", "Made your first on-time payment"),
+        "streak8":      ("Clockwork", "8 on-time payments in a row"),
+        "good_credit":  ("Good Credit", "Reached a 700 credit score"),
+        "excellent":    ("Excellent Credit", "Reached an 800 credit score"),
+        "investor":     ("Investor", "Made your first investment"),
+        "debt_free":    ("Debt Free", "Paid off every dollar of debt"),
+        "learner":      ("Lifelong Learner", "Completed all 5 certifications"),
+        "storm":        ("Weathered the Storm", "Kept investing through a market crash"),
+        "six_figures":  ("Six Figures", "Net worth of $100,000"),
+        "millionaire":  ("Millionaire", "Net worth of $1,000,000"),
+        "quiz_whiz":    ("Credit Whiz", "Answered 3 credit quizzes correctly"),
+        "golden":       ("Golden Years", "Made it to retirement at 65"),
+    }
+
+    QUIZ = [
+        ("What has the biggest impact on your credit score?",
+         ["Paying at least the minimum on time, every time",
+          "How much cash you keep in the bank",
+          "How often you check your score"],
+         "Payment history is king. In this game your score only rises when you pay what is due, "
+         "and only falls when you don't. Cash balance and checking your score don't affect it."),
+        ("Your statement shows: balance $2,000, minimum due $200. What protects your score?",
+         ["Pay at least $200 now — ideally all $2,000 to avoid interest",
+          "Pay nothing until next quarter",
+          "Pay $50, any amount counts"],
+         "Paying the minimum keeps the payment on time. Paying less than the minimum still counts as a "
+         "LATE payment (-20), and paying nothing is a MISSED payment (-50). Paying the full statement "
+         "also means no card interest thanks to the grace period."),
+        ("Which usually charges the highest interest?",
+         ["A credit card balance you carry over",
+          "A bank loan",
+          "They always charge the same"],
+         "Credit cards have much higher rates than bank loans. When you pay debt, attack the "
+         "highest-rate balance first (this game automatically pays your card first)."),
+        ("What happens if you ignore a bill you can't pay?",
+         ["It goes to collections: extra fees and a big credit hit",
+          "Nothing, it disappears after a while",
+          "The bank pays it for you for free"],
+         "Unpaid bills are sent to collections: a 15% fee is added, it becomes debt, and it counts as "
+         "a missed payment (-50). Even a small payment plan is better than ignoring a bill."),
+        ("Why can't an 18-year-old jump straight to an 800 score?",
+         ["Lenders want a long history — scores are capped near 700 for ~5 years",
+          "Young people are banned from good credit",
+          "Scores only start counting at age 30"],
+         "Length of credit history matters. In this game your score can't pass 700 until you've had "
+         "5 years (20 quarters) of history — so start building good habits early."),
+        ("Does swiping your credit card lower your score in this game?",
+         ["No — only unpaid minimum payments lower it",
+          "Yes, every purchase costs points",
+          "Only purchases over $100"],
+         "Using your card is not the problem — not paying it back is. Charging things and paying the "
+         "statement on time is exactly how you build credit."),
+        ("What does a higher credit score get you?",
+         ["Lower interest, higher card limits and bigger loans",
+          "A higher salary",
+          "Free groceries"],
+         "Better credit tiers lower your loan and card interest rates, raise your card limit and let you "
+         "borrow more. Over a lifetime that's thousands of dollars saved."),
+        ("What is an overdraft?",
+         ["Spending more than your bank balance — the bank covers it, for fees and interest",
+          "A free bonus from the bank",
+          "A type of investment"],
+         "Overdraft lets your cash go negative (up to $1,000 here), but costs a $35 fee plus 5% interest "
+         "each quarter. Go past the limit and the rest goes to your card or to collections."),
+        ("If you only ever pay the minimum on your card...",
+         ["Your score stays safe, but interest keeps piling up on the rest",
+          "The debt is forgiven after a year",
+          "You never pay any interest"],
+         "Minimum payments protect your score, but the remaining balance keeps growing with interest. "
+         "Pay in full whenever you can."),
+        ("$1,000 on a card at 5% interest per quarter, unpaid for a year, becomes about...",
+         ["$1,216", "$1,050", "$1,000"],
+         "Interest compounds: 1,000 x 1.05 x 1.05 x 1.05 x 1.05 = about $1,216. Debt grows on top of itself."),
+    ]
 
     def __init__(self, seed=None):
         self.reset(seed)
 
+    # ---------------------------------------------------------------- setup --
     def reset(self, seed=None):
         self.seed = seed if seed is not None else random.randrange(1_000_000)
         self.rng = random.Random(self.seed)
 
-        self.age_years = 18
-        self.age_months = 0
-        self.turns_played = 0
-        self.cash = 1000
-        self.credit_score = 550      # Initial score
-        self.consecutive_on_time = 0
-        
-        self.debt = 0                # Total borrowed debt
+        self.age_years, self.age_months, self.turns_played = 18, 0, 0
+        self.cash = self.START_CASH
         self.investments = 0
-        self.happiness = 100         # Changed from Health to Happiness!
-
+        self.card = 0
+        self.loans = 0
+        self.credit_score = 550
+        self.streak = 0
+        self.best_streak = 0
+        self.happiness = 100
         self.low_credit_turns = 0
         self.zero_happiness_turns = 0
 
-        self.state = "card_prompt"   # card_prompt, main, event, game_over
-        self.death_reason = ""
-        self.log = []
-        self.current_event = None
-        self.event_costs = {}
-        self.event_buttons = []
+        self.min_due = 0
+        self.paid_this_qtr = 0
+        self.paid_card_this_qtr = 0
+        self.stmt_card = 0
+        self.essentials_on_card = False
 
         self.base_income = self.START_INCOME
         self.price_index = 1.0
         self.wage_index = 1.0
-
         self.has_car = True
+        self.has_pet = False
+        self.has_roommate = False
+        self.inheritance_done = False
+        self.rent_adj = 0
+        self.limit_bonus = 0
         self.courses_taken = 0
         self.layoff_turns = 0
         self.layoff_mult = 1.0
+
         self.event_deck = []
-        self.early_retire_offered = False
+        self.last_event_key = None
+        self.current_event = None
+        self.state = "start"            # start, main, event, game_over
+        self.end_reason = ""
+        self.log = []
+        self.popups = []                # dicts for the UI to show
+        self.toasts = []                # (text, tone)
+        self.achievements = []
+        self.quiz_correct = 0
+        self.quiz_pool = []
+        self.credit_reasons = []
+        self.millionaire_notified = False
+        self.had_debt = False
+        self.stats = {"interest": 0, "fees": 0, "on_time": 0, "late": 0, "missed": 0}
 
-    def get_net_worth(self):
-        return self.cash + self.investments - self.debt
+    def start(self):
+        self.state = "main"
+        self.add_log("Credit card approved! Your credit journey begins at a score of 550.", "good")
 
+    # -------------------------------------------------------------- helpers --
     def price(self, amount):
         return int(round(amount * self.price_index))
 
     def wage(self, amount):
         return int(round(amount * self.wage_index))
 
+    def quarter(self):
+        return self.age_months // 3 + 1
+
+    def add_log(self, text, tone="info"):
+        self.log.append((f"{self.age_years} Q{self.quarter()}", text, tone))
+        if len(self.log) > 80:
+            self.log.pop(0)
+
+    def unlock(self, key):
+        if key not in self.achievements:
+            self.achievements.append(key)
+            name, desc = self.ACHIEVEMENTS[key]
+            self.toasts.append((f"Achievement unlocked: {name} — {desc}", "gold"))
+
+    @staticmethod
+    def tier_for(score):
+        for t in LifeGame.TIERS:
+            if score >= t[0]:
+                return t
+        return LifeGame.TIERS[-1]
+
+    def tier(self):
+        return self.tier_for(self.credit_score)
+
+    def loan_rate(self):
+        return self.tier()[2]
+
+    def card_rate(self):
+        return self.tier()[3]
+
+    def card_limit(self):
+        return self.tier()[4] + self.limit_bonus
+
+    def card_available(self):
+        return max(0, self.card_limit() - self.card)
+
+    def loan_capacity(self):
+        return self.tier()[5]
+
+    def loan_room(self):
+        return max(0, self.loan_capacity() - self.loans)
+
+    def overdraft_used(self):
+        return max(0, -self.cash)
+
+    def total_debt(self):
+        return self.card + self.loans + self.overdraft_used()
+
+    def get_net_worth(self):
+        return self.cash + self.investments - self.card - self.loans
+
+    def history_capped(self):
+        return self.turns_played < self.HISTORY_CAP_TURNS
+
     def potential_income(self):
         return int(self.base_income * self.wage_index)
 
     def quarterly_income(self):
-        # NO income penalty for low happiness! Income is purely based on salary & car status.
-        mult = self.layoff_mult
-        if not self.has_car:
-            mult *= 0.90
+        mult = self.layoff_mult * (1.0 if self.has_car else 0.90)
         return int(self.potential_income() * mult)
 
-    def compulsory_groceries(self):
-        return self.price(self.GROCERY_BASE)
+    def essentials_breakdown(self):
+        items = [
+            ("Rent", self.price(self.RENT_BASE + self.rent_adj)),
+            ("Groceries", self.price(self.FOOD_BASE)),
+            ("Transport & bills", self.price(self.UTIL_BASE - (0 if self.has_car else self.NO_CAR_SAVING))),
+        ]
+        if self.has_pet:
+            items.append(("Pet care", self.price(self.PET_COST)))
+        creep = int(self.LIFESTYLE_CREEP * max(0, self.potential_income() - self.wage(self.START_INCOME)))
+        if creep > 0:
+            items.append(("Lifestyle", creep))
+        return items
+
+    def essentials_total(self):
+        return sum(v for _, v in self.essentials_breakdown())
 
     def happiness_cost(self):
-        return self.price(self.HAPPINESS_BUY_COST)
+        return self.price(self.HAPPY_COST)
 
     def happiness_decay(self):
-        # Work stress & life wear decay quarterly happiness
-        return 15 + (10 * (self.age_years - 18)) // 47
+        return 12 + (8 * (self.age_years - 18)) // 47 - (3 if self.has_pet else 0)
 
-    def interest_rate(self):
-        """
-        Adjusted quarterly interest rates (converted from annual rates for 3-month turns):
-        - Excellent (800+): 0.75% / qtr (~3.0% APR)
-        - Good (650-799): 1.25% / qtr (~5.0% APR)
-        - Fair (500-649): 2.00% / qtr (~8.0% APR)
-        - Poor (<500): 3.25% / qtr (~13.0% APR)
-        """
-        if self.credit_score >= 800:
-            return 0.0075
-        if self.credit_score >= 650:
-            return 0.0125
-        if self.credit_score >= 500:
-            return 0.0200
-        return 0.0325
+    def withdraw_fee_rate(self):
+        return 0.0 if self.age_years >= self.PENALTY_FREE_AGE else self.EARLY_WITHDRAW_PENALTY
 
-    def withdraw_penalty_rate(self):
-        return self.EARLY_WITHDRAW_PENALTY
+    def remaining_due(self):
+        return max(0, min(self.min_due - self.paid_this_qtr, self.card + self.loans))
+
+    def can_retire_early(self):
+        return self.state == "main" and self.get_net_worth() >= self.MILLION
 
     def final_score(self):
         nw = self.get_net_worth()
-        if self.death_reason in ("RETIREMENT", "EARLY_RETIREMENT"):
+        if self.end_reason in ("RETIREMENT", "EARLY_RETIREMENT"):
             multiplier = 0.5 + (self.credit_score / 2000)
             return int(nw * multiplier) if nw >= 0 else int(nw)
         return int(min(nw, nw * 0.25) - self.DEATH_PENALTY)
 
-    def add_log(self, text, color=WHITE):
-        self.log.append((f"Age {self.age_years} Q{(self.age_months // 3) + 1}: {text}", color))
-        if len(self.log) > 6:
-            self.log.pop(0)
-
-    def update_credit_on_payment(self, status):
+    # --------------------------------------------------------- credit score --
+    def _credit(self, status, reason):
+        before = self.credit_score
         if status == "missing":
             delta = -50
-            self.consecutive_on_time = 0
+            self.streak = 0
+            self.stats["missed"] += 1
         elif status == "late":
             delta = -20
-            self.consecutive_on_time = 0
-        elif status == "on_time":
-            self.consecutive_on_time += 1
-            if self.credit_score >= 750:
-                delta = self.rng.choice([0, 1])
-            elif self.consecutive_on_time >= 3:
-                delta = 2
+            self.streak = 0
+            self.stats["late"] += 1
+        else:  # on_time
+            self.streak += 1
+            self.best_streak = max(self.best_streak, self.streak)
+            self.stats["on_time"] += 1
+            if before >= 800:
+                delta = self.rng.choice([0, 1])            # very high score: +0 / +1
+            elif before >= 700:
+                delta = 2                                  # established: +2
             else:
-                delta = 5
+                delta = 5 + (2 if self.streak >= 4 else 0)  # building: +5, +2 streak bonus
+        new = max(0, min(1000, before + delta))
+        capped = False
+        if self.history_capped() and new > self.HISTORY_CAP:
+            new = max(before, self.HISTORY_CAP)
+            capped = True
+        self.credit_score = new
+        actual = new - before
+        self.credit_reasons.append((actual, reason, status))
+
+        if actual < 0:
+            self.add_log(f"{reason}. Credit {actual:+d} → {new}", "bad")
+        elif capped and actual < delta:
+            self.add_log(f"{reason}. Credit {actual:+d} (capped at 700 until 5 years of history)", "good")
         else:
-            delta = 0
+            self.add_log(f"{reason}. Credit {actual:+d} → {new}", "good")
 
-        self.credit_score = max(0, self.credit_score + delta)
-        
-        # Credit history cap rule: Can't pass 700 until 5 years of history (20 turns)
-        if self.turns_played < 20 and self.credit_score > 700:
-            self.credit_score = 700
-            
-        self.credit_score = min(1000, self.credit_score)
+        if status == "on_time":
+            self.unlock("on_time")
+            if self.streak >= 8:
+                self.unlock("streak8")
+        if self.credit_score >= 700:
+            self.unlock("good_credit")
+        if self.credit_score >= 800:
+            self.unlock("excellent")
+        t_before, t_after = self.tier_for(before), self.tier()
+        if t_after[0] > t_before[0]:
+            self.toasts.append((f"Credit tier up: {t_after[1]}! Card limit {money(self.card_limit())}, "
+                                f"loan rate {t_after[2]:.2%}/qtr", "good"))
 
-    def take_user_loan(self, amount):
-        if self.credit_score < 400:
-            self.add_log("Loan denied! Credit score below 400.", RED)
-            return False
-        fee = math.ceil(amount * self.interest_rate())
-        self.debt += amount + fee
-        self.cash += amount
-        self.add_log(f"Took out ${amount:,} bank loan (+${fee:,} fee). Debt +${amount+fee:,}", YELLOW)
-        return True
+    def _credit_drop_popup(self, before):
+        after = self.credit_score
+        if after >= before:
+            return
+        drops = [r for r in self.credit_reasons if r[0] < 0]
+        tb, ta = self.tier_for(before), self.tier()
+        best = self.TIERS[0]
+        items = "".join(f"<li>{esc(r)} <b style='color:#F87171'>({d:+d})</b></li>" for d, r, _ in drops)
+        tier_html = ""
+        if ta[0] < tb[0]:
+            tier_html = (f"<p style='color:#FBBF24'><b>Tier dropped: {tb[1]} → {ta[1]}.</b> "
+                         f"Loan rate {tb[2]:.2%} → {ta[2]:.2%}/qtr, card rate {tb[3]:.2%} → {ta[3]:.2%}/qtr, "
+                         f"card limit {money(tb[4] + self.limit_bonus)} → {money(ta[4] + self.limit_bonus)}.</p>")
+        extra = int(10000 * (ta[2] - best[2]))
+        irs = ""
+        if self.credit_score < self.IRS_SCORE:
+            irs = (f" <b style='color:#F87171'>You are below 300 right now — still under 300 at the end of "
+                   f"next quarter means strike {self.low_credit_turns + 1}/{self.IRS_TURNS}.</b>")
+        body = (
+            f"<p>Your score fell from <b>{before}</b> to <b style='color:#F87171'>{after}</b> "
+            f"({after - before:+d}).</p>"
+            f"<p><b>What happened</b></p><ul>{items}</ul>{tier_html}"
+            "<p><b style='color:#F87171'>Why a low score hurts</b></p><ul>"
+            f"<li><b>Expensive debt:</b> loans cost you {ta[2]:.2%}/qtr vs {best[2]:.2%} at 800+. "
+            f"On a $10,000 loan that is {money(extra)} more <i>every quarter</i>.</li>"
+            f"<li><b>Smaller card limit</b> ({money(self.card_limit())}) — less room for emergencies, "
+            "so surprise bills spill into overdraft or collections.</li>"
+            "<li><b>Loans denied</b> below a 450 score.</li>"
+            f"<li><b>IRS seizure</b> if your score stays under 300 for 8 quarters — game over.{irs}</li>"
+            "<li><b>Lower final score</b> — your retirement multiplier is 0.5 + score/2000.</li></ul>"
+            "<p><b style='color:#4ADE80'>How to rebuild it</b></p><ul>"
+            "<li>Pay at least the <b>minimum due</b> shown on the dashboard every quarter <i>before</i> "
+            "pressing Advance: +5 per on-time payment, +2 bonus once you're on a 4-quarter streak.</li>"
+            "<li>Paying something but less than the minimum is still <b>late (-20)</b>; paying nothing is "
+            "<b>missed (-50)</b>.</li>"
+            "<li>Keep an emergency cash cushion so surprise bills never go to collections (-50).</li>"
+            "<li>Using your card is fine — <b>only unpaid debt lowers your score</b>. Charging and paying on "
+            "time is how you climb.</li></ul>"
+        )
+        self.popups.append({"title": "Your credit score dropped", "body": body,
+                            "kind": "warning", "guide": True})
 
-    def repay(self, amount):
-        pay = min(amount, self.debt, self.cash)
-        if pay <= 0:
-            return 0
-        self.cash -= pay
-        self.debt -= pay
-        self.update_credit_on_payment("on_time")
-        return pay
-
-    def can_buy_happiness(self):
-        return self.cash >= self.happiness_cost()
+    # --------------------------------------------------------- money moves --
+    def _note_debt(self):
+        if self.total_debt() > 0:
+            self.had_debt = True
 
     def buy_happiness(self):
-        if not self.can_buy_happiness():
-            return False
         cost = self.happiness_cost()
+        if self.happiness >= 100:
+            return False, "Happiness is already full"
+        if self.cash < cost:
+            return False, f"Need {money(cost)} cash"
         self.cash -= cost
-        self.happiness = min(100, self.happiness + self.HAPPINESS_BUY_PTS)
-        self.add_log(f"Purchased leisure & hobbies (-${cost:,}, Happiness +{self.HAPPINESS_BUY_PTS})", GREEN)
-        return True
+        self.happiness = min(100, self.happiness + self.HAPPY_PTS)
+        self.add_log(f"Spent {money(cost)} on leisure & hobbies. Happiness +{self.HAPPY_PTS}", "good")
+        return True, ""
 
-    def can_pay_debt(self):
-        return self.debt > 0 and self.cash >= min(500, self.debt)
+    def invest(self, amount):
+        if amount <= 0:
+            return False, "Choose an amount above $0"
+        if self.cash < amount:
+            return False, f"Not enough cash (you have {money(self.cash)})"
+        self.cash -= amount
+        self.investments += amount
+        self.add_log(f"Invested {money(amount)} in the stock market", "invest")
+        self.unlock("investor")
+        return True, ""
 
-    def quick_pay_debt(self):
-        if not self.can_pay_debt():
-            return False
-        pay = self.repay(500)
-        self.add_log(f"Paid ${pay:,} debt. Credit updated!", GREEN)
-        return True
-
-    def can_invest(self):
-        return self.cash >= 500
-
-    def quick_invest(self):
-        if not self.can_invest():
-            return False
-        self.cash -= 500
-        self.investments += 500
-        self.add_log("Invested $500 into Stock Market", BLUE)
-        return True
-
-    def can_withdraw(self):
-        return self.investments > 0
-
-    def quick_withdraw(self, amount=500):
-        if not self.can_withdraw():
-            return False
+    def withdraw(self, amount):
+        if self.investments <= 0:
+            return False, "You have no investments"
         amt = min(amount, self.investments)
-        penalty = int(amt * self.withdraw_penalty_rate())
+        if amt <= 0:
+            return False, "Choose an amount above $0"
+        fee = int(amt * self.withdraw_fee_rate())
         self.investments -= amt
-        self.cash += (amt - penalty)
-        if penalty > 0:
-            self.add_log(f"Retrieved ${amt-penalty:,} from investments (fee: -${penalty:,})", ORANGE)
+        self.cash += amt - fee
+        self.stats["fees"] += fee
+        msg = f"Withdrew {money(amt - fee)} from investments" + (f" (early-withdrawal fee {money(fee)})" if fee else "")
+        self.add_log(msg, "warn" if fee else "invest")
+        return True, ""
+
+    def loan_block_reason(self, amount):
+        if self.loan_capacity() <= 0:
+            return f"Loans need a {self.LOAN_MIN_SCORE}+ credit score"
+        if amount > self.loan_room():
+            return f"Loan limit reached ({money(self.loan_room())} left)"
+        return None
+
+    def take_loan(self, amount):
+        if amount <= 0:
+            return False, "Choose an amount above $0"
+        reason = self.loan_block_reason(amount)
+        if reason:
+            self.add_log(f"Loan of {money(amount)} denied: {reason}", "bad")
+            return False, reason
+        fee = math.ceil(amount * self.LOAN_ORIGINATION)
+        self.loans += amount + fee
+        self.cash += amount
+        self.stats["fees"] += fee
+        self._note_debt()
+        self.add_log(f"Bank loan of {money(amount)} at {self.loan_rate():.2%}/qtr (+{money(fee)} fee)", "warn")
+        return True, ""
+
+    def _apply_payment(self, pay):
+        to_card = min(pay, self.card)
+        self.card -= to_card
+        to_loans = pay - to_card
+        self.loans -= to_loans
+        self.cash -= pay
+        self.paid_this_qtr += pay
+        self.paid_card_this_qtr += to_card
+        if self.card + self.loans == 0 and self.had_debt and self.cash >= 0:
+            self.unlock("debt_free")
+        return to_card, to_loans
+
+    def pay_debt(self, amount):
+        owed = self.card + self.loans
+        if owed <= 0:
+            return False, "You have no card or loan debt"
+        if self.cash <= 0:
+            return False, "No cash available to pay with"
+        pay = min(amount, self.cash, owed)
+        if pay <= 0:
+            return False, "Choose an amount above $0"
+        to_card, to_loans = self._apply_payment(pay)
+        parts = []
+        if to_card:
+            parts.append(f"card {money(to_card)}")
+        if to_loans:
+            parts.append(f"loans {money(to_loans)}")
+        self.add_log(f"Paid {money(pay)} toward debt ({', '.join(parts)})", "good")
+        return True, ""
+
+    def pay_minimum(self):
+        r = self.remaining_due()
+        if r <= 0:
+            return False, "This quarter's minimum is already covered"
+        return self.pay_debt(r)
+
+    def pay_all(self):
+        return self.pay_debt(self.card + self.loans)
+
+    def retire_early(self):
+        if not self.can_retire_early():
+            return False, "Net worth must be at least $1,000,000"
+        self.state = "game_over"
+        self.end_reason = "EARLY_RETIREMENT"
+        return True, ""
+
+    # ----------------------------------------------------------- quarter ---
+    def _evaluate_payments(self):
+        if self.min_due <= 0:
+            return
+        paid, due = self.paid_this_qtr, self.min_due
+        if paid >= due or (self.card + self.loans == 0 and paid > 0):
+            self._credit("on_time", f"On-time payment ({money(paid)} paid, {money(due)} minimum)")
+        elif paid > 0:
+            self._credit("late", f"Late payment: paid only {money(paid)} of the {money(due)} minimum")
         else:
-            self.add_log(f"Retrieved ${amt:,} from investments", BLUE)
-        return True
+            self._credit("missing", f"Missed payment: $0 paid of the {money(due)} minimum")
+
+    def _charge_interest(self):
+        if self.card > 0 and self.stmt_card > 0 and self.paid_card_this_qtr < self.stmt_card:
+            i = math.ceil(self.card * self.card_rate())
+            self.card += i
+            self.stats["interest"] += i
+            self.add_log(f"Card interest +{money(i)} ({self.card_rate():.2%}/qtr) — pay the full statement to avoid it", "bad")
+        elif self.stmt_card > 0:
+            self.add_log("Statement paid in full — no card interest this quarter (grace period)", "good")
+        if self.loans > 0:
+            i = math.ceil(self.loans * self.loan_rate())
+            self.loans += i
+            self.stats["interest"] += i
+            self.add_log(f"Loan interest +{money(i)} ({self.loan_rate():.2%}/qtr)", "bad")
+        if self.cash < 0:
+            i = math.ceil(-self.cash * self.OVERDRAFT_RATE) + self.OVERDRAFT_FEE
+            self.cash -= i
+            self.stats["fees"] += i
+            self.add_log(f"Overdraft fee & interest -{money(i)}", "bad")
+        if self.card > self.card_limit():
+            self.card += self.OVER_LIMIT_FEE
+            self.stats["fees"] += self.OVER_LIMIT_FEE
+            self.add_log(f"Card is over its {money(self.card_limit())} limit: {money(self.OVER_LIMIT_FEE)} fee", "bad")
+
+    def _collections(self, amount, label):
+        fee = math.ceil(amount * self.COLLECTIONS_FEE)
+        self.loans += amount + fee
+        self.stats["fees"] += fee
+        self._note_debt()
+        self._credit("missing", f"{label}: {money(amount)} unpaid and sent to collections (+{money(fee)} fee)")
+
+    def _forced_payment(self, amount, label):
+        """Compulsory costs: (card if autopay) -> cash -> overdraft -> card -> collections."""
+        remaining = amount
+        used_card = 0
+        if self.essentials_on_card:
+            use = min(remaining, self.card_available())
+            self.card += use
+            used_card += use
+            remaining -= use
+        use = min(remaining, max(0, self.cash))
+        self.cash -= use
+        remaining -= use
+        if remaining > 0:
+            room = self.OVERDRAFT_LIMIT - self.overdraft_used()
+            use = min(remaining, max(0, room))
+            if use:
+                self.cash -= use
+                remaining -= use
+                self.add_log(f"Not enough cash for {label.lower()} — {money(use)} went into overdraft", "bad")
+        if remaining > 0:
+            use = min(remaining, self.card_available())
+            if use:
+                self.card += use
+                used_card += use
+                remaining -= use
+                self.add_log(f"Overdraft maxed — {money(use)} charged to your card", "warn")
+        if used_card:
+            self.unlock("first_swipe")
+        if remaining > 0:
+            self._collections(remaining, label)
+        self._note_debt()
+        return used_card
+
+    def _post_statement(self):
+        card_due = 0
+        if self.card > 0:
+            card_due = min(self.card, max(self.price(self.MIN_PAYMENT_FLOOR), math.ceil(self.card * self.CARD_MIN_PCT)))
+        loan_due = 0
+        if self.loans > 0:
+            loan_due = min(self.loans, max(self.price(self.MIN_PAYMENT_FLOOR), math.ceil(self.loans * self.LOAN_MIN_PCT)))
+        self.min_due = card_due + loan_due
+        self.stmt_card = self.card
+        self.paid_this_qtr = 0
+        self.paid_card_this_qtr = 0
+        if self.min_due:
+            self.add_log(f"New statement: minimum payment {money(self.min_due)} due before next quarter", "warn")
 
     def next_turn(self):
+        if self.state != "main":
+            return
+        start_score = self.credit_score
+        self.credit_reasons = []
+
+        self._evaluate_payments()
+        self._charge_interest()
+
         self.turns_played += 1
         self.age_months += 3
         if self.age_months >= 12:
             self.age_years += 1
             self.age_months = 0
 
-        # Retirement at 65
         if self.age_years >= 65:
             self.state = "game_over"
-            self.death_reason = "RETIREMENT"
+            self.end_reason = "RETIREMENT"
+            self.unlock("golden")
             return
 
-        # Early Retirement Option if $1 Million net worth reached
-        if self.get_net_worth() >= 1_000_000 and not self.early_retire_offered:
-            self.early_retire_offered = True
-
-        # Economic scaling
         self.price_index *= 1 + self.INFLATION_QTR
         self.wage_index *= 1 + self.RAISE_QTR
 
-        # Income processing
         earned = self.quarterly_income()
+        self.cash += earned
+        note = ""
         if self.layoff_turns > 0:
             self.layoff_turns -= 1
+            note = f" ({int(self.layoff_mult * 100)}% pay)"
             if self.layoff_turns == 0:
                 self.layoff_mult = 1.0
-                self.add_log("Back on full salary!", GREEN)
+        self.add_log(f"Paycheck +{money(earned)}{note}", "good")
+        if note and self.layoff_turns == 0:
+            self.add_log("Back on full salary next quarter!", "good")
 
-        self.cash += earned
+        ess = self.essentials_total()
+        on_card = self._forced_payment(ess, "Essentials")
+        self.add_log(f"Compulsory rent, groceries & bills -{money(ess)}" +
+                     (f" ({money(on_card)} on card)" if on_card else ""), "info")
 
-        # Compulsory Groceries & Essentials
-        grocery = self.compulsory_groceries()
-        if self.cash >= grocery:
-            self.cash -= grocery
-            self.add_log(f"Paid compulsory living costs (-${grocery:,})", WHITE)
-        else:
-            shortfall = grocery - self.cash
-            self.cash = 0
-            self.debt += shortfall
-            self.add_log(f"Overdraft/Credit used for essentials (+${shortfall:,} debt)", RED)
+        decay = self.happiness_decay()
+        self.happiness = max(0, self.happiness - decay)
 
-        # Passive Happiness decay
-        self.happiness = max(0, self.happiness - self.happiness_decay())
-
-        # Interest on debt & missed payment handling
-        if self.debt > 0:
-            rate = self.interest_rate()
-            interest = math.ceil(self.debt * rate)
-            self.debt += interest
-            self.add_log(f"Quarterly Interest +${interest:,} ({rate:.2%}/qtr)", RED)
-            
-            if self.debt > self.CREDIT_CARD_LIMIT + self.OVERDRAFT_LIMIT:
-                self.update_credit_on_payment("missing")
-                self.add_log("Over credit limit! Missed payment penalty (-50 Credit)", RED)
-            else:
-                self.update_credit_on_payment("late")
-                self.add_log("Unpaid debt carried over (-20 Credit)", ORANGE)
-
-        # Investment returns
         if self.investments > 0:
             if self.rng.random() < self.CRASH_CHANCE:
-                growth = -self.rng.uniform(*self.CRASH_RANGE)
-                change = int(self.investments * growth)
+                change = -int(self.investments * self.rng.uniform(*self.CRASH_RANGE))
                 self.investments = max(0, self.investments + change)
-                self.add_log(f"MARKET CRASH! Investments dropped ${abs(change):,}", RED)
+                self.add_log(f"MARKET CRASH! Investments fell {money(-change)}", "bad")
+                self.unlock("storm")
             else:
-                growth = self.rng.uniform(*self.INVEST_RANGE)
-                change = int(self.investments * growth)
+                change = int(self.investments * self.rng.uniform(*self.INVEST_RANGE))
                 self.investments = max(0, self.investments + change)
-                if change >= 0:
-                    self.add_log(f"Investments grew by +${change:,}", GREEN)
-                else:
-                    self.add_log(f"Investments dropped by -${abs(change):,}", RED)
+                self.add_log(f"Investments {'grew' if change >= 0 else 'fell'} {money(abs(change))}",
+                             "invest" if change >= 0 else "bad")
 
-        # Happiness check: Dying of DEPRESSION if happiness remains 0 for 4 quarters (1 year)
+        self._post_statement()
+        self._milestones()
+
         if self.happiness <= 0:
             self.zero_happiness_turns += 1
-            if self.zero_happiness_turns >= 4:
+            if self.zero_happiness_turns >= self.DEPRESSION_TURNS:
                 self.state = "game_over"
-                self.death_reason = "DEPRESSION"
+                self.end_reason = "DEPRESSION"
                 return
+            self.add_log(f"Happiness is 0! Depression warning {self.zero_happiness_turns}/{self.DEPRESSION_TURNS}", "bad")
         else:
-            self.zero_happiness_turns = max(0, self.zero_happiness_turns - 1)
+            self.zero_happiness_turns = 0
 
-        # IRS Credit death condition (< 299 for 2 years / 8 turns)
-        if self.credit_score < 299:
+        if self.credit_score < self.IRS_SCORE:
             self.low_credit_turns += 1
-            if self.low_credit_turns >= 8:
+            if self.low_credit_turns >= self.IRS_TURNS:
                 self.state = "game_over"
-                self.death_reason = "IRS_SEIZURE"
+                self.end_reason = "IRS_SEIZURE"
                 return
+            self.add_log(f"Credit under 300! IRS strike {self.low_credit_turns}/{self.IRS_TURNS}", "bad")
         else:
-            self.low_credit_turns = max(0, self.low_credit_turns - 1)
+            self.low_credit_turns = 0
 
-        self.trigger_quarter_event()
+        self._credit_drop_popup(start_score)
+        self._trigger_event()
 
-    def draw_event_key(self):
-        for _ in range(len(self.EVENT_DECK) * 2):
+    def _milestones(self):
+        nw = self.get_net_worth()
+        if nw >= 100_000:
+            self.unlock("six_figures")
+        if nw >= self.MILLION:
+            self.unlock("millionaire")
+            if not self.millionaire_notified:
+                self.millionaire_notified = True
+                self.popups.append({
+                    "title": "You're a millionaire!", "kind": "success",
+                    "body": "<p>Your net worth has passed <b>$1,000,000</b>.</p>"
+                            "<p>You can now <b>retire early</b> from the dashboard at any time while your net "
+                            "worth stays above $1M — or keep playing to grow your final score.</p>"})
+
+    # -------------------------------------------------------------- events --
+    def _draw_event_key(self):
+        if self.age_months == 9 and self.rng.random() < 0.5 and self.last_event_key != "holiday":
+            return "holiday"
+        for _ in range(sum(self.EVENT_DECK.values()) * 2):
             if not self.event_deck:
-                self.event_deck = list(self.EVENT_DECK)
+                self.event_deck = [k for k, n in self.EVENT_DECK.items() for _ in range(n)]
                 self.rng.shuffle(self.event_deck)
             key = self.event_deck.pop()
-            if key == "debt" and self.debt <= 0:
-                continue
-            if key == "course" and self.courses_taken >= self.MAX_COURSES:
+            if key == self.last_event_key or not self._event_applies(key):
                 continue
             return key
-        return "leisure"
+        return "festival"
 
-    def build_event(self, key):
-        c = {}
-        if key == "credit_edu":
-            return c, {
-                "title": "Credit Score Workshop",
-                "desc": "A workshop explains credit rules:"
-                        "• High Score Benefits: Lower loan interest (~0.75%/qtr) & higher score bonus."
-                        "• Low Score Drawbacks: Higher interest (~3.25%/qtr), loan rejections, IRS seizure."
-                        "• How to Improve: Pay debt on time (+5 pts), maintain streaks (+2 pts), & avoid missing payments (-50 pts).",
-                "options": [
-                    ("Attend Workshop (Gain +15 Credit)", "attend_edu"),
-                    ("Skip Workshop", "pass")
-                ]
-            }
-        if key == "leisure":
-            c["cost"] = self.price(500)
-            skip_hp = 20
-            c["skip_hp"] = skip_hp
-            return c, {
-                "title": "Weekend Getaway & Festival",
-                "desc": "Your friends are planning a music festival trip to recharge and relax.",
-                "options": [
-                    (f"Pay ${c['cost']:,} Cash (Happiness +25)", "pay_leisure"),
-                    (f"Charge ${c['cost']:,} to Credit Card (Happiness +25)", "debt_leisure"),
-                    (f"Skip trip (-{skip_hp} Happiness)", "skip_leisure")
-                ]
-            }
-        if key == "market":
-            c["invest"] = self.price(800)
-            c["invest_loan"] = self.price(1500)
-            return c, {
-                "title": "Stock Market Opportunity",
-                "desc": "An index fund investment opportunity is available.",
-                "options": [
-                    (f"Invest ${c['invest']:,} Cash", "invest_index"),
-                    (f"Take ${c['invest_loan']:,} Bank Loan to Invest", "loan_invest"),
-                    ("Pass on opportunity", "pass")
-                ]
-            }
-        if key == "car" and self.has_car:
-            c["car"] = self.price(600)
-            c["car_sale"] = self.price(1000)
-            return c, {
-                "title": "Vehicle Repair",
-                "desc": "Your car transmission needs maintenance.",
-                "options": [
-                    (f"Pay ${c['car']:,} cash to fix", "fix_car_cash"),
-                    (f"Charge ${c['car']:,} to Credit Card", "fix_car_loan"),
-                    (f"Sell car (+${c['car_sale']:,}, -10% Pay)", "sell_car")
-                ]
-            }
-        if key == "car":
-            c["used_car"] = self.price(2500)
-            return c, {
-                "title": "Commute Difficulty",
-                "desc": "Public transit delays are frustrating your daily schedule.",
-                "options": [
-                    (f"Buy used car (${c['used_car']:,} Cash)", "buy_car_cash"),
-                    (f"Finance used car (${c['used_car']:,} Debt)", "buy_car_loan"),
-                    ("Keep taking transit (-10 Happiness)", "bus")
-                ]
-            }
-        if key == "vacation":
-            c["vacation"] = self.price(1200)
-            c["extra_work"] = self.wage(500)
-            return c, {
-                "title": "Tropical Resort Vacation",
-                "desc": "You have an opportunity to book a relaxing beach vacation.",
-                "options": [
-                    (f"Book trip (${c['vacation']:,} Cash, +35 Happiness)", "vacation_cash"),
-                    (f"Charge trip to Credit Card (${c['vacation']:,}, +35 Happiness)", "vacation_loan"),
-                    (f"Decline & work overtime (+${c['extra_work']:,}, -15 Happiness)", "vacation_skip")
-                ]
-            }
+    def _event_applies(self, key):
         if key == "course":
-            c["course"] = self.price(self.COURSE_BASE_COST * (1.4 ** self.courses_taken))
-            c["bonus"] = self.COURSE_BASE_BONUS
-            bonus_now = self.wage(c["bonus"])
-            return c, {
-                "title": "Career Certification",
-                "desc": f"Certification {self.courses_taken+1}/{self.MAX_COURSES}: permanently boost your quarterly salary.",
-                "options": [
-                    (f"Pay ${c['course']:,} Cash (Income +${bonus_now:,}/qtr)", "course_cash"),
-                    (f"Finance ${c['course']:,} on Credit Card", "course_loan"),
-                    ("Skip course", "pass")
-                ]
-            }
-        if key == "debt":
-            c["pay"] = min(self.debt, self.price(1000))
-            return c, {
-                "title": "Debt Settlement Offer",
-                "desc": "Your bank offers a credit score bonus if you pay off debt now.",
-                "options": [
-                    (f"Pay ${c['pay']:,} Debt now (+10 Credit)", "pay_debt_now"),
-                    ("Pass", "pass")
-                ]
-            }
-        c["severance"] = self.wage(1200)
-        return c, {
-            "title": "Company Layoff",
-            "desc": "Your company is downsizing staff.",
-            "options": [
-                (f"Take severance (+${c['severance']:,}, 50% pay for 2 qtrs)", "layoff_severance"),
-                ("Switch to temp role (75% pay for 2 qtrs)", "layoff_temp"),
-                ("Pass", "pass")
-            ]
-        }
-
-    def trigger_quarter_event(self):
-        key = self.draw_event_key()
-        self.event_costs, self.current_event = self.build_event(key)
-        self.state = "event"
-        self.build_event_buttons()
-
-    def option_block_reason(self, action):
-        c = self.event_costs
-        cash_needed = {
-            "pay_leisure": c.get("cost"),
-            "invest_index": c.get("invest"),
-            "fix_car_cash": c.get("car"),
-            "buy_car_cash": c.get("used_car"),
-            "vacation_cash": c.get("vacation"),
-            "course_cash": c.get("course"),
-            "pay_debt_now": c.get("pay"),
-        }
-        need = cash_needed.get(action)
-        if need is not None and self.cash < need:
-            return f"need ${need:,} cash"
-        return None
-
-    def build_event_buttons(self):
-        self.event_buttons = []
-        options = self.current_event["options"]
-        bw, bh = 940, 95
-        start_y = 1150
-        spacing = 20
-
-        for i, (text, action) in enumerate(options):
-            reason = self.option_block_reason(action)
-            label = text if reason is None else f"{text} [{reason}]"
-            x = (VIRTUAL_WIDTH - bw) // 2
-            y = start_y + i * (bh + spacing)
-            btn = Button(x, y, bw, bh, label, BLUE, DARK_BLUE, FONT_REGULAR)
-            btn.action = action
-            btn.enabled = reason is None
-            self.event_buttons.append(btn)
-
-    def handle_choice(self, action):
-        c = self.event_costs
-
-        if action == "attend_edu":
-            self.update_credit_on_payment("on_time")
-            self.add_log("Attended Credit Workshop! Credit +15", GREEN)
-
-        elif action == "pay_leisure":
-            self.cash -= c["cost"]
-            self.happiness = min(100, self.happiness + 25)
-            self.add_log(f"Paid ${c['cost']:,} for weekend trip. Happiness +25", GREEN)
-
-        elif action == "debt_leisure":
-            self.debt += c["cost"]
-            self.happiness = min(100, self.happiness + 25)
-            self.add_log(f"Charged ${c['cost']:,} trip to credit card. Debt +${c['cost']:,}", YELLOW)
-
-        elif action == "skip_leisure":
-            self.happiness = max(0, self.happiness - c["skip_hp"])
-            self.add_log(f"Skipped trip. Happiness dropped by {c['skip_hp']}", ORANGE)
-
-        elif action == "invest_index":
-            self.cash -= c["invest"]
-            self.investments += c["invest"]
-            self.add_log(f"Invested ${c['invest']:,} in Index Funds", GREEN)
-
-        elif action == "loan_invest":
-            fee = math.ceil(c["invest_loan"] * self.interest_rate())
-            self.debt += c["invest_loan"] + fee
-            self.investments += c["invest_loan"]
-            self.add_log(f"Borrowed ${c['invest_loan']:,} to invest. Debt +${c['invest_loan']+fee:,}", YELLOW)
-
-        elif action == "fix_car_cash":
-            self.cash -= c["car"]
-            self.add_log(f"Fixed car for ${c['car']:,} cash", GREEN)
-
-        elif action == "fix_car_loan":
-            self.debt += c["car"]
-            self.add_log(f"Charged car repair (${c['car']:,}) to credit card", YELLOW)
-
-        elif action == "sell_car":
-            self.cash += c["car_sale"]
-            self.has_car = False
-            self.add_log(f"Sold car for ${c['car_sale']:,}. Salary reduced by 10%", YELLOW)
-
-        elif action == "buy_car_cash":
-            self.cash -= c["used_car"]
-            self.has_car = True
-            self.add_log(f"Bought car for ${c['used_car']:,} cash. Full salary restored", GREEN)
-
-        elif action == "buy_car_loan":
-            self.debt += c["used_car"]
-            self.has_car = True
-            self.add_log(f"Financed car (${c['used_car']:,}). Debt +${c['used_car']:,}", YELLOW)
-
-        elif action == "bus":
-            self.happiness = max(0, self.happiness - 10)
-            self.add_log("Stuck with public transit. Happiness -10", ORANGE)
-
-        elif action == "vacation_cash":
-            self.cash -= c["vacation"]
-            self.happiness = min(100, self.happiness + 35)
-            self.add_log(f"Took vacation (${c['vacation']:,} cash). Happiness +35", GREEN)
-
-        elif action == "vacation_loan":
-            self.debt += c["vacation"]
-            self.happiness = min(100, self.happiness + 35)
-            self.add_log(f"Charged vacation (${c['vacation']:,}) to credit card", YELLOW)
-
-        elif action == "vacation_skip":
-            self.cash += c["extra_work"]
-            self.happiness = max(0, self.happiness - 15)
-            self.add_log(f"Worked extra shifts (+${c['extra_work']:,}, Happiness -15)", WHITE)
-
-        elif action in ("course_cash", "course_loan"):
-            if action == "course_cash":
-                self.cash -= c["course"]
-            else:
-                self.debt += c["course"]
-            self.base_income += c["bonus"]
-            self.courses_taken += 1
-            self.add_log(f"Completed Course {self.courses_taken}! Salary +${self.wage(c['bonus']):,}/qtr", GREEN)
-
-        elif action == "pay_debt_now":
-            pay = self.repay(c["pay"])
-            self.add_log(f"Settled ${pay:,} debt! Bonus credit boost", GREEN)
-
-        elif action == "layoff_severance":
-            self.cash += c["severance"]
-            self.layoff_turns, self.layoff_mult = 2, 0.5
-            self.add_log(f"Laid off. Severance +${c['severance']:,}, 50% pay for 2 quarters", ORANGE)
-
-        elif action == "layoff_temp":
-            self.layoff_turns, self.layoff_mult = 2, 0.75
-            self.add_log("Temp gig: 75% pay for 2 quarters", ORANGE)
-
-        elif action == "pass":
-            self.add_log("Passed on event option.", WHITE)
-
-        self.state = "main"
+            return self.courses_taken < self.MAX_COURSES
+        if key in ("accident",):
+            return self.has_car
+        if key == "pet":
+            return not self.has_pet
+        if key == "limit_offer":
+            return self.credit_score >= 600 and self.limit_bonus < 6000
+        if key == "dip":
+            return self.investments >= 500
+        if key == "debt_offer":
+            return self.card + self.loans > 0
+        if key == "layoff":
+            return self.layoff_turns == 0
+        if key == "inheritance":
+            return not self.inheritance_done
         return True
 
+    def _trigger_event(self):
+        key = self._draw_event_key()
+        self.last_event_key = key
+        ev = getattr(self, f"_ev_{key}")()
+        ev["key"] = key
+        self.current_event = ev
+        self.state = "event"
 
-def draw_card_prompt(surface, game, buttons, mouse_pos):
-    surface.fill(BG_COLOR)
+    @staticmethod
+    def O(label, pay=None, amount=0, tone="skip", log="", need=0, **fx):
+        return {"label": label, "pay": pay, "amount": int(amount), "tone": tone,
+                "log": log, "need": int(need), "fx": fx}
 
-    card_rect = pygame.Rect(70, 240, 940, 1240)
-    pygame.draw.rect(surface, CARD_BG, card_rect, border_radius=24)
-    pygame.draw.rect(surface, ACCENT, card_rect, 4, border_radius=24)
+    def _collect_option(self, amt, what):
+        return self.O(f"Ignore the bill — it goes to collections (+15% fee, -50 credit)",
+                      "collections", amt, "bad", log=what)
 
-    ts = FONT_TITLE.render("WELCOME TO LIFE", True, ACCENT)
-    tr = ts.get_rect(center=(VIRTUAL_WIDTH // 2, 310))
-    surface.blit(ts, tr)
+    def _loan_label(self, amt):
+        return f"Payment plan: {money(amt)} bank loan at {self.loan_rate():.2%}/qtr"
 
-    subtitle = FONT_HEADER.render("Financial Odyssey (18 - 65)", True, WHITE)
-    sr = subtitle.get_rect(center=(VIRTUAL_WIDTH // 2, 380))
-    surface.blit(subtitle, sr)
+    def _ev_festival(self):
+        c = self.price(450)
+        return {"title": "Weekend Music Festival",
+                "desc": "Your friends are heading to a 3-day music festival to recharge. Missing it will sting.",
+                "options": [
+                    self.O(f"Pay {money(c)} cash  (+18 happiness)", "cash", c, "cash", "Went to the festival", happiness=18),
+                    self.O(f"Charge {money(c)} to credit card  (+18 happiness)", "card", c, "card", "Charged the festival", happiness=18),
+                    self.O("Stay home  (-12 happiness)", None, 0, "skip", "Skipped the festival", happiness=-12)]}
 
-    msg_lines = [
-        "Congratulations! You turn 18 today.",
-        "You have APPLIED FOR YOUR FIRST CREDIT CARD!",
-        "",
-        "--- GAME RULES & CREDIT GUIDE ---",
-        "• Turn duration: 1 turn = 3 Months (18 to 65).",
-        "• Happiness System: Spend cash on leisure to maintain happiness.",
-        "  (0 Happiness for 1 year = DEATH BY DEPRESSION)",
-        "• Income: Salary is NOT penalized by low happiness.",
-        "• Credit Score Guide:",
-        "  - High Credit: Low loan interest (~0.75%/qtr) & higher score bonus.",
-        "  - Low Credit: High interest (~3.25%/qtr), loan rejection, IRS seizure.",
-        "  - How to improve: Pay debt on time (+5 pts), streaks (+2 pts).",
-        "  - Penalties: Missed payment (-50 pts), carrying debt (-20 pts).",
-        "  - 5-Year History Cap: Credit score capped at 700 for first 5 years.",
-        "• Retrieve Investment: Pull cash out of investments anytime ($500 button).",
-        "• Early Retirement: Retire anytime once Net Worth reaches $1,000,000!"
-    ]
+    def _ev_market(self):
+        a, b = self.price(1000), self.price(2000)
+        return {"title": "Index Fund Opportunity",
+                "desc": "A low-fee index fund is open to new investors. Investing early lets compounding work for decades — "
+                        "but markets can fall, and borrowed money charges interest even when they do.",
+                "options": [
+                    self.O(f"Invest {money(a)} cash", "cash", a, "cash", f"Invested {money(a)} in an index fund", invest=a),
+                    self.O(f"Borrow {money(b)} to invest (loan at {self.loan_rate():.2%}/qtr)", "loan", b, "loan",
+                           f"Borrowed {money(b)} to invest", invest=b),
+                    self.O("Pass", None, 0, "skip", "Passed on the index fund")]}
 
-    y = 450
-    for line in msg_lines:
-        color = ACCENT if "---" in line else (GREEN if "APPLIED" in line else WHITE)
-        font = FONT_MEDIUM if "---" in line or "APPLIED" in line else FONT_REGULAR
-        t = font.render(line, True, color)
-        r = t.get_rect(center=(VIRTUAL_WIDTH // 2, y))
-        surface.blit(t, r)
-        y += 42
+    def _ev_car(self):
+        if self.has_car:
+            c, s = self.price(700), self.price(1500)
+            return {"title": "Car Trouble",
+                    "desc": "Your car's transmission is slipping. Without a car your commute gets harder and your pay drops 10%.",
+                    "options": [
+                        self.O(f"Repair it: {money(c)} cash", "cash", c, "cash", "Repaired the car"),
+                        self.O(f"Repair it: charge {money(c)} to card", "card", c, "card", "Charged the car repair"),
+                        self.O(f"Sell the car (+{money(s)}, -10% pay, cheaper transport)", None, 0, "bad",
+                               f"Sold the car for {money(s)}", cash=s, has_car=False)]}
+        c = self.price(3000)
+        return {"title": "Commute Struggles",
+                "desc": "Bus delays are wrecking your schedule. A used car would restore your full pay.",
+                "options": [
+                    self.O(f"Buy a used car: {money(c)} cash", "cash", c, "cash", "Bought a used car", has_car=True),
+                    self.O(f"Finance it: {money(c)} loan at {self.loan_rate():.2%}/qtr", "loan", c, "loan", "Financed a used car", has_car=True),
+                    self.O("Keep taking the bus  (-10 happiness)", None, 0, "skip", "Stuck with the bus", happiness=-10)]}
 
-    start_btn = Button(190, 1500, 700, 110, "BEGIN YOUR JOURNEY", GREEN, DARK_GREEN, FONT_TITLE)
-    start_btn.check_hover(mouse_pos)
-    start_btn.draw(surface)
-    buttons.append(start_btn)
+    def _ev_vacation(self):
+        c, w = self.price(1300), self.wage(600)
+        return {"title": "Beach Vacation",
+                "desc": "A week at the beach would do wonders for your mood — or you could pick up overtime instead.",
+                "options": [
+                    self.O(f"Book it: {money(c)} cash  (+30 happiness)", "cash", c, "cash", "Took a beach vacation", happiness=30),
+                    self.O(f"Charge {money(c)} to card  (+30 happiness)", "card", c, "card", "Charged a beach vacation", happiness=30),
+                    self.O(f"Work overtime instead  (+{money(w)}, -12 happiness)", None, 0, "good",
+                           f"Worked overtime (+{money(w)})", cash=w, happiness=-12)]}
+
+    def _ev_course(self):
+        c = self.price(self.COURSE_BASE_COST * (1.35 ** self.courses_taken))
+        b = self.wage(self.COURSE_BONUS)
+        q = math.ceil(c / max(1, b * (1 - self.LIFESTYLE_CREEP)))
+        return {"title": "Career Certification",
+                "desc": f"Certification {self.courses_taken + 1} of {self.MAX_COURSES}: permanently raises your pay by "
+                        f"{money(b)}/qtr. After lifestyle creep it pays for itself in about {q} quarters.",
+                "options": [
+                    self.O(f"Pay {money(c)} cash", "cash", c, "cash", "Completed a certification", course=True),
+                    self.O(f"Charge {money(c)} to card", "card", c, "card", "Completed a certification (on card)", course=True),
+                    self.O(f"Student loan: {money(c)} at {self.loan_rate():.2%}/qtr", "loan", c, "loan",
+                           "Completed a certification (student loan)", course=True),
+                    self.O("Skip it", None, 0, "skip", "Skipped the certification")]}
+
+    def _ev_credit_quiz(self):
+        if not self.quiz_pool:
+            self.quiz_pool = list(range(len(self.QUIZ)))
+            self.rng.shuffle(self.quiz_pool)
+        q, answers, explain = self.QUIZ[self.quiz_pool.pop()]
+        order = list(range(3))
+        self.rng.shuffle(order)
+        opts = [self.O(answers[i], None, 0, "info", "", quiz=(i == 0)) for i in order]
+        return {"title": "Credit Workshop Quiz",
+                "desc": f"A free community credit workshop ends with a quick question. Answer correctly to win a "
+                        f"{money(int(round(self.price(150), -1)))} gift card.\n\n{q}",
+                "explain": explain, "options": opts}
+
+    def _ev_layoff(self):
+        s = self.wage(1500)
+        return {"title": "Company Layoffs",
+                "desc": "Your company is downsizing and your role is cut. This is exactly why an emergency fund "
+                        "(3-6 months of essentials) matters.",
+                "options": [
+                    self.O(f"Take severance: +{money(s)} now, 50% pay for 2 quarters", None, 0, "loan",
+                           f"Laid off with {money(s)} severance", cash=s, layoff=(2, 0.5)),
+                    self.O("Take a temp contract: 75% pay for 2 quarters", None, 0, "skip",
+                           "Took a temp contract", layoff=(2, 0.75))]}
+
+    def _ev_medical(self):
+        c = self.price(1400)
+        return {"title": "Medical Emergency",
+                "desc": f"A trip to the ER leaves you with a {money(c)} bill. This one isn't optional.",
+                "options": [
+                    self.O(f"Pay {money(c)} cash", "cash", c, "cash", "Paid the hospital bill"),
+                    self.O(f"Charge {money(c)} to card", "card", c, "card", "Charged the hospital bill"),
+                    self.O(self._loan_label(c), "loan", c, "loan", "Hospital payment plan"),
+                    self._collect_option(c, "Hospital bill")]}
+
+    def _ev_phone(self):
+        new, used = self.price(900), self.price(300)
+        return {"title": "Phone Smashed",
+                "desc": "Your phone slipped and the screen is shattered beyond repair.",
+                "options": [
+                    self.O(f"New flagship phone: charge {money(new)} to card  (+5 happiness)", "card", new, "card",
+                           "Bought a new phone on card", happiness=5),
+                    self.O(f"Refurbished phone: {money(used)} cash", "cash", used, "cash", "Bought a refurbished phone"),
+                    self.O("Go without a phone  (-12 happiness)", None, 0, "skip", "Went without a phone", happiness=-12)]}
+
+    def _ev_rent_hike(self):
+        hike, move = 250, self.price(900)
+        opts = [self.O(f"Accept the increase (+{money(self.price(hike))}/qtr rent forever)", None, 0, "bad",
+                       "Accepted a rent increase", rent=hike)]
+        if not self.has_roommate:
+            opts.append(self.O(f"Get a roommate (rent -{money(self.price(300))}/qtr, -15 happiness)", None, 0, "good",
+                               "Got a roommate", rent=-300, roommate=True, happiness=-15))
+        opts += [self.O(f"Move somewhere cheaper: {money(move)} cash moving costs (-8 happiness)", "cash", move, "cash",
+                        "Moved to avoid the rent hike", happiness=-8),
+                 self.O(f"Move: charge {money(move)} moving costs to card (-8 happiness)", "card", move, "card",
+                        "Moved (moving costs on card)", happiness=-8)]
+        return {"title": "Rent Increase",
+                "desc": f"Your landlord is raising rent by {money(self.price(hike))} per quarter, permanently.",
+                "options": opts}
+
+    def _ev_side_hustle(self):
+        w = self.wage(700)
+        return {"title": "Weekend Side Hustle",
+                "desc": "A friend needs help with weekend deliveries for the next few months.",
+                "options": [
+                    self.O(f"Take the gig  (+{money(w)}, -12 happiness)", None, 0, "good", f"Side hustle +{money(w)}",
+                           cash=w, happiness=-12),
+                    self.O("Decline — protect your weekends", None, 0, "skip", "Declined the side hustle")]}
+
+    def _ev_wedding(self):
+        c = self.price(700)
+        return {"title": "Friend's Wedding",
+                "desc": "Your close friend is getting married out of town. Travel, hotel and a gift add up.",
+                "options": [
+                    self.O(f"Go: {money(c)} cash  (+10 happiness)", "cash", c, "cash", "Went to the wedding", happiness=10),
+                    self.O(f"Go: charge {money(c)} to card  (+10 happiness)", "card", c, "card", "Charged the wedding trip", happiness=10),
+                    self.O("Send regrets  (-15 happiness)", None, 0, "skip", "Missed the wedding", happiness=-15)]}
+
+    def _ev_tax_refund(self):
+        r = self.wage(900)
+        opts = [self.O(f"Save it (+{money(r)} cash)", None, 0, "cash", f"Saved a {money(r)} tax refund", cash=r),
+                self.O(f"Invest it (+{money(r)} investments)", None, 0, "info", f"Invested a {money(r)} tax refund", invest=r)]
+        if self.card + self.loans > 0:
+            opts.append(self.O(f"Put it toward debt ({money(r)})", None, 0, "good", "Paid debt with the tax refund", cash=r, pay_debt=r))
+        opts.append(self.O("Treat yourself (+20 happiness)", None, 0, "card", "Splurged the tax refund", happiness=20))
+        return {"title": "Tax Refund", "desc": f"You overpaid taxes last year and got {money(r)} back.", "options": opts}
+
+    def _ev_limit_offer(self):
+        return {"title": "Credit Limit Increase",
+                "desc": "Thanks to your good payment record, the bank offers to raise your card limit by $2,000.",
+                "info": "A higher limit gives you more room for emergencies so surprise bills don't hit overdraft or "
+                        "collections. In this game, using your card never hurts your score — only unpaid minimums do. "
+                        "The risk is temptation: more credit makes overspending easier.",
+                "options": [
+                    self.O("Accept (+$2,000 card limit)", None, 0, "card", "Card limit raised by $2,000", limit_bonus=2000),
+                    self.O("Decline", None, 0, "skip", "Declined a limit increase")]}
+
+    def _ev_identity_theft(self):
+        f = self.price(800)
+        return {"title": "Suspicious Charges!",
+                "desc": f"{money(f)} of purchases you never made just showed up on your credit card.",
+                "info": "Always read your statements. Reporting fraud quickly gets charges reversed — ignoring it means "
+                        "you're stuck paying them (plus interest).",
+                "options": [
+                    self.O("Report it to your bank right away (charges reversed, -5 happiness hassle)", None, 0, "good",
+                           "Reported fraud — charges reversed", happiness=-5),
+                    self.O(f"Ignore it (the {money(f)} stays on your card)", None, 0, "bad",
+                           f"Ignored fraud — {money(f)} stays on the card", card_charge=f)]}
+
+    def _ev_pet(self):
+        c = self.price(600)
+        return {"title": "Adopt a Dog?",
+                "desc": f"A shelter puppy picked you. Adoption costs {money(c)}, food & vet add "
+                        f"{money(self.price(self.PET_COST))}/qtr forever — but your happiness decays 3 less per quarter.",
+                "options": [
+                    self.O(f"Adopt: {money(c)} cash  (+25 happiness)", "cash", c, "cash", "Adopted a dog!", happiness=25, pet=True),
+                    self.O(f"Adopt: charge {money(c)} to card  (+25 happiness)", "card", c, "card", "Adopted a dog (on card)", happiness=25, pet=True),
+                    self.O("Not right now", None, 0, "skip", "Didn't adopt")]}
+
+    def _ev_review(self):
+        r = self.wage(450)
+        chance = min(0.85, 0.45 + 0.08 * self.courses_taken)
+        return {"title": "Performance Review",
+                "desc": f"Annual review time. Your certifications give you a {int(chance * 100)}% chance if you ask for a raise.",
+                "options": [
+                    self.O(f"Ask for a raise (+{money(r)}/qtr if it works, -5 happiness if not)", None, 0, "good", "",
+                           gamble=(chance, {"income": 450, "log": f"Raise approved! +{money(r)}/qtr"},
+                                   {"happiness": -5, "log": "Raise request denied"})),
+                    self.O(f"Volunteer for a big project (+{money(self.wage(300))}/qtr, -15 happiness)", None, 0, "loan",
+                           "Took on extra responsibility", income=300, happiness=-15),
+                    self.O("Keep your head down", None, 0, "skip", "Quiet review")]}
+
+    def _ev_crypto(self):
+        c = self.price(1000)
+        return {"title": "Crypto Hype",
+                "desc": "A coworker swears a new coin will 'definitely 10x'. He wants you in today.",
+                "info": "High-risk speculation is not investing. Never put in money you can't afford to lose — and "
+                        "never borrow to gamble.",
+                "options": [
+                    self.O(f"Buy {money(c)} of the coin (cash)", "cash", c, "bad", "",
+                           gamble=(0.30, {"cash": c * 3, "log": f"The coin mooned! Sold for {money(c * 3)}"},
+                                   {"cash": c // 10, "log": f"The coin crashed 90%. Recovered {money(c // 10)}"})),
+                    self.O("Pass — stick to what you understand", None, 0, "skip", "Passed on crypto")]}
+
+    def _ev_inheritance(self):
+        self.inheritance_done = True
+        g = self.wage(3000)
+        opts = [self.O(f"Keep it as an emergency fund (+{money(g)} cash)", None, 0, "cash", f"Inherited {money(g)}", cash=g),
+                self.O(f"Invest it (+{money(g)} investments)", None, 0, "info", f"Invested a {money(g)} inheritance", invest=g)]
+        if self.card + self.loans > 0:
+            opts.append(self.O("Pay down debt with it", None, 0, "good", "Paid debt with an inheritance", cash=g, pay_debt=g))
+        return {"title": "Small Inheritance",
+                "desc": f"A great-aunt you barely knew left you {money(g)}.", "options": opts}
+
+    def _ev_accident(self):
+        c = self.price(1800)
+        return {"title": "Fender Bender",
+                "desc": f"Someone backed into you. Your insurance deductible is {money(c)}.",
+                "options": [
+                    self.O(f"Pay {money(c)} cash", "cash", c, "cash", "Paid the deductible"),
+                    self.O(f"Charge {money(c)} to card", "card", c, "card", "Charged the deductible"),
+                    self.O(self._loan_label(c), "loan", c, "loan", "Deductible payment plan"),
+                    self._collect_option(c, "Insurance deductible")]}
+
+    def _ev_scam(self):
+        c = self.price(500)
+        return {"title": "Urgent Call from the 'IRS'",
+                "desc": f"A caller says you owe back taxes and will be arrested unless you pay {money(c)} in gift cards today.",
+                "options": [
+                    self.O("Hang up and report the number", None, 0, "good", "Spotted a scam call", happiness=5,
+                           popup={"title": "Scam avoided!", "kind": "success",
+                                  "body": "<p>Real tax agencies never call demanding gift cards, wire transfers or crypto. "
+                                          "Hang up, and contact the agency directly using its official number.</p>"}),
+                    self.O(f"Pay {money(c)} in gift cards", "cash", c, "bad", f"Lost {money(c)} to a phone scam", happiness=-10,
+                           popup={"title": "That was a scam", "kind": "warning",
+                                  "body": "<p>The money is gone — gift cards are untraceable. Real tax agencies never demand "
+                                          "gift cards or threaten arrest over the phone.</p>"})]}
+
+    def _ev_dip(self):
+        before = self.investments
+        self.investments = int(self.investments * 0.88)
+        self.add_log(f"Markets slid 12% — investments fell {money(before - self.investments)}", "bad")
+        b = self.price(1000)
+        fee = int(self.investments * self.withdraw_fee_rate())
+        return {"title": "Market Slump",
+                "desc": f"Markets fell 12% this quarter and your portfolio dropped to {money(self.investments)}. "
+                        "Headlines are screaming 'recession'.",
+                "info": "Historically, markets have recovered from every slump — but selling in a panic locks in your losses.",
+                "options": [
+                    self.O("Hold steady", None, 0, "skip", "Held investments through the slump"),
+                    self.O(f"Buy the dip: invest {money(b)} cash", "cash", b, "cash", f"Bought the dip ({money(b)})", invest=b),
+                    self.O(f"Panic-sell everything (fee {money(fee)})", None, 0, "bad", "Panic-sold investments", sell_all=True)]}
+
+    def _ev_bonus(self):
+        b = self.wage(1000)
+        return {"title": "Year-End Bonus",
+                "desc": f"Great work this year! Your manager hands you a {money(b)} bonus.",
+                "options": [
+                    self.O(f"Save it (+{money(b)} cash)", None, 0, "cash", f"Saved a {money(b)} bonus", cash=b),
+                    self.O(f"Invest it (+{money(b)} investments)", None, 0, "info", f"Invested a {money(b)} bonus", invest=b),
+                    self.O("Celebrate (+20 happiness)", None, 0, "card", "Celebrated the bonus", happiness=20)]}
+
+    def _ev_holiday(self):
+        c = self.price(550)
+        return {"title": "Holiday Season",
+                "desc": "Gifts, travel home and holiday dinners. Everyone else seems to be spending.",
+                "options": [
+                    self.O(f"Celebrate: {money(c)} cash  (+12 happiness)", "cash", c, "cash", "Holiday celebrations", happiness=12),
+                    self.O(f"Celebrate: charge {money(c)} to card  (+12 happiness)", "card", c, "card", "Holidays on the card", happiness=12),
+                    self.O("Skip gifts this year  (-15 happiness)", None, 0, "skip", "Skipped the holidays", happiness=-15)]}
+
+    def _ev_debt_offer(self):
+        owed = self.card + self.loans
+        pay = min(owed, self.price(1000))
+        waive = min(owed - pay, self.price(100))
+        return {"title": "Pay-Down Challenge",
+                "desc": f"Your bank will waive {money(waive)} of fees if you pay {money(pay)} toward your debt right now. "
+                        "This counts toward your minimum payment.",
+                "options": [
+                    self.O(f"Pay {money(pay)} now" + (f" ({money(waive)} waived)" if waive else ""), None, 0, "good",
+                           "Took the pay-down challenge", need=pay, pay_debt=pay, waive=waive),
+                    self.O("Not now", None, 0, "skip", "Skipped the pay-down challenge")]}
+
+    # ------------------------------------------------------ option choices --
+    def option_block_reason(self, o):
+        p, a = o["pay"], o["amount"]
+        if p == "cash" and self.cash < a:
+            return f"need {money(a)} cash"
+        if p == "card" and self.card_available() < a:
+            return f"only {money(self.card_available())} card credit left"
+        if p == "loan":
+            r = self.loan_block_reason(a)
+            if r:
+                return r[0].lower() + r[1:]
+        if o["need"] and self.cash < o["need"]:
+            return f"need {money(o['need'])} cash"
+        return None
+
+    def _apply_fx(self, fx):
+        for k, v in fx.items():
+            if k == "happiness":
+                self.happiness = max(0, min(100, self.happiness + v))
+            elif k == "cash":
+                self.cash += v
+            elif k == "invest":
+                self.investments += v
+                self.unlock("investor")
+            elif k == "income":
+                self.base_income += v
+            elif k == "rent":
+                self.rent_adj = max(-600, self.rent_adj + v)
+            elif k == "roommate":
+                self.has_roommate = True
+            elif k == "has_car":
+                self.has_car = v
+            elif k == "pet":
+                self.has_pet = True
+            elif k == "layoff":
+                self.layoff_turns, self.layoff_mult = v
+            elif k == "course":
+                self.courses_taken += 1
+                self.base_income += self.COURSE_BONUS
+                if self.courses_taken >= self.MAX_COURSES:
+                    self.unlock("learner")
+            elif k == "limit_bonus":
+                self.limit_bonus += v
+            elif k == "card_charge":
+                self.card += v
+                self._note_debt()
+            elif k == "pay_debt":
+                pay = min(v, self.card + self.loans, max(0, self.cash))
+                if pay > 0:
+                    self._apply_payment(pay)
+                    self.add_log(f"Paid {money(pay)} toward debt", "good")
+            elif k == "waive":
+                w = min(v, self.loans)
+                self.loans -= w
+                self.card -= min(v - w, self.card)
+            elif k == "sell_all":
+                amt = self.investments
+                fee = int(amt * self.withdraw_fee_rate())
+                self.investments = 0
+                self.cash += amt - fee
+                self.stats["fees"] += fee
+            elif k == "gamble":
+                chance, win, lose = v
+                won = self.rng.random() < chance
+                res = dict(win if won else lose)
+                log = res.pop("log", "")
+                self._apply_fx(res)
+                if log:
+                    self.add_log(log, "good" if won else "warn")
+            elif k == "popup":
+                self.popups.append(v)
+
+    def choose_option(self, idx):
+        if self.state != "event":
+            return False, ""
+        ev = self.current_event
+        o = ev["options"][idx]
+        reason = self.option_block_reason(o)
+        if reason:
+            return False, reason
+        start_score = self.credit_score
+        self.credit_reasons = []
+        p, a = o["pay"], o["amount"]
+        if p == "cash":
+            self.cash -= a
+        elif p == "card":
+            self.card += a
+            self._note_debt()
+            self.unlock("first_swipe")
+        elif p == "loan":
+            fee = math.ceil(a * self.LOAN_ORIGINATION)
+            self.loans += a + fee
+            self.stats["fees"] += fee
+            self._note_debt()
+        elif p == "collections":
+            self._collections(a, o["log"] or "Bill")
+
+        fx = dict(o["fx"])
+        quiz = fx.pop("quiz", None)
+        self._apply_fx(fx)
+
+        if o["log"] and p != "collections":
+            tone = {"cash": "info", "card": "card", "loan": "warn", "bad": "bad", "good": "good", "info": "invest"}.get(o["tone"], "info")
+            self.add_log(o["log"] + (f" (-{money(a)})" if p == "cash" and a else
+                                     f" ({money(a)} on card)" if p == "card" else
+                                     f" ({money(a)} loan)" if p == "loan" else ""), tone)
+
+        if quiz is not None:
+            if quiz:
+                prize = int(round(self.price(150), -1))
+                self.cash += prize
+                self.happiness = min(100, self.happiness + 5)
+                self.quiz_correct += 1
+                if self.quiz_correct >= 3:
+                    self.unlock("quiz_whiz")
+                self.add_log(f"Aced the credit quiz! +{money(prize)} gift card", "good")
+                title, kind = "Correct!", "success"
+            else:
+                self.add_log("Missed the credit quiz question", "warn")
+                title, kind = "Not quite", "info"
+            correct = next(x["label"] for x in ev["options"] if x["fx"].get("quiz"))
+            self.popups.append({"title": title, "kind": kind,
+                                "body": f"<p><b>Answer:</b> {esc(correct)}</p><p>{esc(ev['explain'])}</p>"})
+
+        self._milestones()
+        self._credit_drop_popup(start_score)
+        self.current_event = None
+        self.state = "main"
+        return True, ""
+
+    # ---------------------------------------------------------- the guide --
+    def credit_guide_html(self):
+        rows = "".join(
+            f"<tr><td><b>{n}</b></td><td>{s}+</td><td>{lr:.2%}</td><td>{cr:.2%}</td>"
+            f"<td>{money(lim)}</td><td>{money(cap) if cap else 'Denied'}</td></tr>"
+            for s, n, lr, cr, lim, cap in self.TIERS)
+        return (
+            "<p>Your <b>credit score</b> (0 - 1000) is how much lenders trust you. You start at <b>550</b> "
+            "with a brand-new credit card.</p>"
+            "<p><b style='color:#FACC15'>How the score moves</b> — it only changes when a bill is due:</p><ul>"
+            "<li>Each quarter your card and loans post a <b>statement</b> with a <b>minimum payment due</b> "
+            "(10% of the card balance, 8% of loans). It's shown on the dashboard.</li>"
+            "<li><b style='color:#4ADE80'>On time</b> (paid at least the minimum before advancing): "
+            "+5 while building (under 700), +2 bonus on a 4+ quarter streak; +2 from 700-799; +0 or +1 at 800+.</li>"
+            "<li><b style='color:#FBBF24'>Late</b> (paid something, but less than the minimum): -20.</li>"
+            "<li><b style='color:#F87171'>Missed</b> (paid nothing) or a bill sent to collections: -50.</li>"
+            "<li>Swiping your card or carrying a balance does <b>not</b> lower your score — only unpaid "
+            "minimums do. No debt means no statement, and your score simply holds.</li>"
+            "<li><b>History cap:</b> you can't pass 700 until you have 5 years (20 quarters) of history.</li></ul>"
+            "<p><b style='color:#FACC15'>What your tier gets you</b> (rates are per quarter):</p>"
+            "<table cellspacing='0' cellpadding='6' width='100%'>"
+            "<tr style='color:#8A97B1'><td>Tier</td><td>Score</td><td>Loan</td><td>Card</td><td>Card limit</td><td>Max loans</td></tr>"
+            f"{rows}</table>"
+            "<p><b style='color:#FACC15'>Limits, interest & fees</b></p><ul>"
+            "<li><b>Card limit:</b> purchases that would go over your limit are declined.</li>"
+            "<li><b>Grace period:</b> pay the full statement balance and you pay no card interest that quarter.</li>"
+            f"<li><b>Overdraft:</b> if essentials exceed your cash, your bank balance can go down to "
+            f"-{money(self.OVERDRAFT_LIMIT)} ({money(self.OVERDRAFT_FEE)} fee + 5% interest per quarter). "
+            "Beyond that it goes on your card, and beyond your card limit it goes to <b>collections</b> "
+            "(+15% fee and -50 credit).</li>"
+            "<li><b>Bank loans</b> are cheaper than cards but need a 450+ score; a 2% fee is added up front.</li>"
+            "<li>Payments always go to the highest-interest balance (your card) first.</li></ul>"
+            "<p><b style='color:#F87171'>Danger zone</b></p><ul>"
+            "<li>Below 450: no loans. Below 300 for 8 straight quarters: the IRS seizes your assets (game over).</li>"
+            "<li>At retirement your net worth is multiplied by 0.5 + score/2000 — a 900 score is worth 30% more "
+            "than a 300 score.</li></ul>"
+            "<p><b style='color:#4ADE80'>Pro tip:</b> turn on <i>Charge essentials to card</i>, then pay the "
+            "statement in full each quarter. You'll build credit every quarter and never pay card interest.</p>"
+        )
 
 
-def draw_main_dashboard(surface, game, buttons, mouse_pos):
-    surface.fill(BG_COLOR)
+# =============================================================================
+#                                  UI LAYER
+# =============================================================================
+VW, VH = 1080, 1920                      # fixed virtual canvas (9:16)
 
-    # Top Header Panel
-    header_rect = pygame.Rect(40, 30, 1000, 200)
-    pygame.draw.rect(surface, CARD_BG, header_rect, border_radius=20)
-    pygame.draw.rect(surface, GRAY, header_rect, 2, border_radius=20)
+C_BG = "#0A1120"
+C_CARD = "#121A2C"
+C_BORDER = "#22304D"
+C_TEXT = "#EEF2FA"
+C_MUTED = "#8A97B1"
+C_DIM = "#56627C"
+C_GREEN = "#22C55E"
+C_RED = "#EF4444"
+C_RED_L = "#F87171"
+C_AMBER = "#F59E0B"
+C_GOLD = "#FACC15"
+C_BLUE = "#3B82F6"
+C_PURPLE = "#8B5CF6"
+C_TEAL = "#14B8A6"
 
-    qtr = (game.age_months // 3) + 1
-    t_age = FONT_TITLE.render(f"AGE: {game.age_years} (Q{qtr})", True, ACCENT)
-    surface.blit(t_age, (70, 55))
+TONE_COLORS = {"info": "#C9D3E6", "good": "#4ADE80", "bad": C_RED_L, "warn": "#FBBF24",
+               "card": "#A78BFA", "invest": "#60A5FA", "gold": C_GOLD}
 
-    t_nw = FONT_HEADER.render(f"Net Worth: ${game.get_net_worth():,}", True,
-                              GREEN if game.get_net_worth() >= 0 else RED)
-    surface.blit(t_nw, (70, 140))
+FAMILIES = ["Segoe UI", "SF Pro Display", "Inter", "Helvetica Neue", "Roboto",
+            "Noto Sans", "Arial", "DejaVu Sans"]
 
-    # Stats Panel
-    stats_rect = pygame.Rect(40, 250, 1000, 560)
-    pygame.draw.rect(surface, CARD_BG, stats_rect, border_radius=20)
-    pygame.draw.rect(surface, GRAY, stats_rect, 2, border_radius=20)
-
-    # Happiness Bar (Replaced Health)
-    t_h = FONT_MEDIUM.render(f"HAPPINESS: {game.happiness}/100", True, WHITE)
-    surface.blit(t_h, (80, 285))
-    pygame.draw.rect(surface, DARK_GRAY, (80, 325, 880, 32), border_radius=16)
-    h_width = int(880 * (game.happiness / 100))
-    h_color = GREEN if game.happiness > 50 else (YELLOW if game.happiness > 25 else RED)
-    if h_width > 0:
-        pygame.draw.rect(surface, h_color, (80, 325, h_width, 32), border_radius=16)
-
-    # Credit Score Bar (Capped at 1000)
-    history_note = " (5yr Cap: Max 700)" if game.turns_played < 20 else ""
-    rate_str = f"Loan Rate: {game.interest_rate():.2%}/qtr"
-    t_c = FONT_MEDIUM.render(f"CREDIT SCORE: {game.credit_score}/1000{history_note}  [{rate_str}]", True, WHITE)
-    surface.blit(t_c, (80, 380))
-    pygame.draw.rect(surface, DARK_GRAY, (80, 420, 880, 32), border_radius=16)
-    c_width = int(880 * (game.credit_score / 1000))
-    c_color = GREEN if game.credit_score >= 700 else (YELLOW if game.credit_score >= 500 else RED)
-    if c_width > 0:
-        pygame.draw.rect(surface, c_color, (80, 420, c_width, 32), border_radius=16)
-
-    # Threshold Warnings
-    if game.credit_score < 299 or game.low_credit_turns > 0:
-        w_t = FONT_SMALL.render(f"WARNING: IRS SEIZURE RISK ({game.low_credit_turns}/8 strikes)", True, RED)
-        surface.blit(w_t, (80, 462))
-    if game.happiness <= 0 or game.zero_happiness_turns > 0:
-        w_h = FONT_SMALL.render(f"WARNING: CRITICAL DEPRESSION ({game.zero_happiness_turns}/4 strikes)", True, RED)
-        surface.blit(w_h, (80, 482))
-
-    # Financial Details Grid
-    fin_items = [
-        ("Cash Balance", f"${game.cash:,}", GREEN),
-        ("Total Debt", f"${game.debt:,}", RED if game.debt > 0 else GRAY),
-        ("Investments", f"${game.investments:,}", BLUE),
-        ("Qtr Pay / Essentials", f"${game.quarterly_income():,} / ${game.compulsory_groceries():,}", ACCENT)
-    ]
-
-    y_grid = 520
-    for i, (label, val, col) in enumerate(fin_items):
-        rx = 80 + (i % 2) * 450
-        ry = y_grid + (i // 2) * 90
-        tl = FONT_REGULAR.render(label, True, GRAY)
-        tv = FONT_HEADER.render(val, True, col)
-        surface.blit(tl, (rx, ry))
-        surface.blit(tv, (rx, ry + 28))
-
-    # Credit limit status
-    status = [f"Credit Limit: ${game.CREDIT_CARD_LIMIT:,}", f"Overdraft Limit: ${game.OVERDRAFT_LIMIT:,}"]
-    if game.early_retire_offered:
-        status.append("EARLY RETIREMENT READY!")
-    t_status = FONT_SMALL.render("  |  ".join(status), True, ACCENT if game.early_retire_offered else GRAY)
-    surface.blit(t_status, (80, 750))
-
-    # Action Buttons Grid
-    bw = 460
-    bh = 85
-    
-    # Row 1: Happiness & Retrieve Investment Buttons
-    buy_h = Button(40, 830, bw, bh, f"Buy Leisure/Hobbies (-${game.happiness_cost():,}, +30 HP)", GREEN, DARK_GREEN, FONT_REGULAR)
-    buy_h.action = "buy_happiness"
-    buy_h.enabled = game.can_buy_happiness()
-    buy_h.check_hover(mouse_pos)
-    buy_h.draw(surface)
-    buttons.append(buy_h)
-
-    ret_inv = Button(540, 830, bw, bh, "Retrieve $500 Investment", PURPLE, DARK_BLUE, FONT_REGULAR)
-    ret_inv.action = "quick_withdraw"
-    ret_inv.enabled = game.can_withdraw()
-    ret_inv.check_hover(mouse_pos)
-    ret_inv.draw(surface)
-    buttons.append(ret_inv)
-
-    # Row 2: Take Bank Loan & Pay Debt
-    loan_b = Button(40, 930, bw, bh, "Take $1,000 Bank Loan", YELLOW, DARK_YELLOW, FONT_REGULAR, BLACK)
-    loan_b.action = "get_loan"
-    loan_b.enabled = game.credit_score >= 400
-    loan_b.check_hover(mouse_pos)
-    loan_b.draw(surface)
-    buttons.append(loan_b)
-
-    pay_d = Button(540, 930, bw, bh, "Pay $500 Debt", ORANGE, DARK_YELLOW, FONT_REGULAR)
-    pay_d.action = "quick_pay_debt"
-    pay_d.enabled = game.can_pay_debt()
-    pay_d.check_hover(mouse_pos)
-    pay_d.draw(surface)
-    buttons.append(pay_d)
-
-    # Row 3: Invest $500
-    inv_b = Button(40, 1030, 960, 65, "Invest $500 in Stock Market", BLUE, DARK_BLUE, FONT_REGULAR)
-    inv_b.action = "quick_invest"
-    inv_b.enabled = game.can_invest()
-    inv_b.check_hover(mouse_pos)
-    inv_b.draw(surface)
-    buttons.append(inv_b)
-
-    # Log Panel
-    log_rect = pygame.Rect(40, 1115, 1000, 340)
-    pygame.draw.rect(surface, CARD_BG, log_rect, border_radius=20)
-    pygame.draw.rect(surface, GRAY, log_rect, 2, border_radius=20)
-
-    t_log = FONT_MEDIUM.render("RECENT TRANSACTIONS & LOG", True, ACCENT)
-    surface.blit(t_log, (70, 1135))
-
-    for i, (txt, col) in enumerate(game.log):
-        lt = FONT_REGULAR.render(txt, True, col)
-        surface.blit(lt, (70, 1185 + i * 38))
-
-    # Early Retirement button if eligible
-    if game.early_retire_offered:
-        retire_btn = Button(40, 1475, 1000, 70, "RETIRE EARLY ($1M+ NET WORTH REACHED!)", ACCENT, DARK_YELLOW, FONT_HEADER, BLACK)
-        retire_btn.action = "early_retire"
-        retire_btn.check_hover(mouse_pos)
-        retire_btn.draw(surface)
-        buttons.append(retire_btn)
-        
-    # Advance Quarter Button
-    next_btn = Button(140, 1565, 800, 110, "ADVANCE 3 MONTHS >>", ACCENT, DARK_YELLOW, FONT_TITLE, BLACK)
-    next_btn.action = "next_quarter"
-    next_btn.check_hover(mouse_pos)
-    next_btn.draw(surface)
-    buttons.append(next_btn)
+W_NORMAL, W_MED, W_SEMI, W_BOLD = (QFont.Weight.Normal, QFont.Weight.Medium,
+                                    QFont.Weight.DemiBold, QFont.Weight.Bold)
 
 
-def draw_event_screen(surface, game, buttons, mouse_pos):
-    overlay = pygame.Surface((VIRTUAL_WIDTH, VIRTUAL_HEIGHT))
-    overlay.set_alpha(220)
-    overlay.fill((0, 0, 0))
-    surface.blit(overlay, (0, 0))
+def make_font(px, weight=W_NORMAL):
+    f = QFont()
+    f.setFamilies(FAMILIES)
+    f.setPixelSize(int(px))           # pixel sizes => identical layout at any DPI
+    f.setWeight(weight)
+    f.setHintingPreference(QFont.HintingPreference.PreferNoHinting)  # scales cleanly
+    return f
 
-    card_rect = pygame.Rect(50, 260, 980, 1320)
-    pygame.draw.rect(surface, CARD_BG, card_rect, border_radius=24)
-    pygame.draw.rect(surface, ACCENT, card_rect, 4, border_radius=24)
 
-    ev_tag = FONT_MEDIUM.render(f"QUARTERLY EVENT - AGE {game.age_years}", True, ACCENT)
-    surface.blit(ev_tag, (VIRTUAL_WIDTH // 2 - ev_tag.get_width() // 2, 310))
+def label(text="", px=24, weight=W_NORMAL, color=C_TEXT, wrap=False,
+          align=None, rich=False):
+    lb = QLabel(text)
+    lb.setFont(make_font(px, weight))
+    lb.setStyleSheet(f"color:{color}; background:transparent;")
+    lb.setWordWrap(wrap)
+    lb.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
+    if align is not None:
+        lb.setAlignment(align)
+    if wrap:
+        lb.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+    return lb
 
-    title = FONT_TITLE.render(game.current_event["title"], True, WHITE)
-    surface.blit(title, (VIRTUAL_WIDTH // 2 - title.get_width() // 2, 380))
 
-    words = game.current_event["desc"].split()
-    lines = []
-    curr = ""
-    for w in words:
-        test = curr + (" " if curr else "") + w
-        if FONT_MEDIUM.size(test)[0] < 880:
-            curr = test
-        else:
-            lines.append(curr)
-            curr = w
-    if curr:
-        lines.append(curr)
+def set_color(lb, color):
+    lb.setStyleSheet(f"color:{color}; background:transparent;")
 
-    y = 470
-    for line in lines:
-        t = FONT_MEDIUM.render(line, True, GRAY)
-        surface.blit(t, (VIRTUAL_WIDTH // 2 - t.get_width() // 2, y))
-        y += 45
 
-    # Informational Credit Guide Block (Credit Workshop)
-    if game.current_event["title"] == "Credit Score Workshop":
-        info_rect = pygame.Rect(80, 720, 920, 310)
-        pygame.draw.rect(surface, (20, 30, 45), info_rect, border_radius=16)
-        pygame.draw.rect(surface, ACCENT, info_rect, 2, border_radius=16)
-        
-        info_lines = [
-            "--- CREDIT SCORE SUMMARY & GUIDE ---",
-            "• High Score Benefits: Lower loan interest (~0.75%/qtr vs 3.25%/qtr) & higher final score multiplier.",
-            "• Low Score Drawbacks: Expensive debt interest, rejected loans, & IRS asset seizure (<299 for 2 yrs).",
-            "• How to Improve Credit Score:",
-            "  1. Pay debt on time (+5 points).",
-            "  2. Maintain consecutive payment streaks (+2 extra points).",
-            "  3. Avoid missed payments (-50 points) and carrying unpaid debt (-20 points).",
-            "  4. 5-Year History Cap: Cannot cross 700 points during the first 5 years."
+class FitLabel(QLabel):
+    """Single-line label that shrinks its font until the text fits its width."""
+
+    def __init__(self, text="", px=32, weight=W_BOLD, color=C_TEXT, min_px=12,
+                 align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter):
+        super().__init__()
+        self._px, self._min, self._weight = px, min_px, weight
+        self.setFont(make_font(px, weight))
+        self.setAlignment(align)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(int(px * 1.35))
+        set_color(self, color)
+        self.setText(text)
+
+    def setText(self, text):
+        super().setText(text)
+        self._fit()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+    def _fit(self):
+        avail = self.width() - 4
+        if avail <= 0:
+            return
+        px = self._px
+        f = make_font(px, self._weight)
+        while px > self._min and QFontMetrics(f).horizontalAdvance(self.text()) > avail:
+            px -= 1
+            f.setPixelSize(px)
+        if self.font().pixelSize() != px:
+            self.setFont(f)
+
+
+class WrapButton(QPushButton):
+    """Push button whose text word-wraps and auto-shrinks to always fit inside."""
+
+    def __init__(self, text="", variant="slate", px=24, weight=W_SEMI, height=None):
+        super().__init__()
+        self.setProperty("variant", variant)
+        self._px, self._weight = px, weight
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 8, 18, 8)
+        self.lbl = QLabel()
+        self.lbl.setWordWrap(True)
+        self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.lbl.setFont(make_font(px, weight))
+        lay.addWidget(self.lbl)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if height:
+            self.setFixedHeight(height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._text = ""
+        self.setText(text)
+
+    def setText(self, text):
+        self._text = text
+        self.lbl.setText(text)
+        self._fit()
+
+    def text(self):
+        return self._text
+
+    def set_variant(self, v):
+        if self.property("variant") != v:
+            self.setProperty("variant", v)
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+    def _fit(self):
+        w, h = self.width() - 36, self.height() - 16
+        if w <= 0 or h <= 0:
+            return
+        px = self._px
+        f = make_font(px, self._weight)
+        flags = int(Qt.TextFlag.TextWordWrap) | int(Qt.AlignmentFlag.AlignCenter)
+        while px > 12:
+            fm = QFontMetrics(f)
+            r = fm.boundingRect(QRect(0, 0, w, 10000), flags, self._text)
+            longest = max((fm.horizontalAdvance(word) for word in self._text.split()), default=0)
+            if r.height() <= h and longest <= w:
+                break
+            px -= 1
+            f.setPixelSize(px)
+        if self.lbl.font().pixelSize() != px:
+            self.lbl.setFont(f)
+
+
+class Card(QFrame):
+    def __init__(self, name="card"):
+        super().__init__()
+        self.setObjectName(name)
+
+
+class CreditGauge(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.score, self.tier, self.color = 550, "Poor", C_AMBER
+        self.setMinimumHeight(200)
+
+    def set_score(self, score, tier, color):
+        self.score, self.tier, self.color = score, tier, color
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        pen_w = 24
+        r = min((w - pen_w * 2) / 2, (h - pen_w) / 1.52)
+        cx, cy = w / 2, pen_w / 2 + r + 6
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+
+        pen = QPen(QColor("#1C263B"), pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(rect, 210 * 16, -240 * 16)
+
+        # tier markers
+        p.setPen(QPen(QColor("#33415F"), 3))
+        for s in (300, 450, 600, 700, 800):
+            ang = math.radians(210 - 240 * s / 1000)
+            r1, r2 = r - pen_w / 2 - 6, r - pen_w / 2 - 16
+            p.drawLine(int(cx + r1 * math.cos(ang)), int(cy - r1 * math.sin(ang)),
+                       int(cx + r2 * math.cos(ang)), int(cy - r2 * math.sin(ang)))
+
+        span = -240 * max(0.0, min(1.0, self.score / 1000))
+        if span < 0:
+            p.setPen(QPen(QColor(self.color), pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(rect, 210 * 16, int(span * 16))
+
+        p.setPen(QColor(C_TEXT))
+        p.setFont(make_font(int(r * 0.52), W_BOLD))
+        p.drawText(QRectF(cx - r, cy - r * 0.55, 2 * r, r * 0.62), Qt.AlignmentFlag.AlignCenter, str(self.score))
+        p.setPen(QColor(self.color))
+        p.setFont(make_font(int(r * 0.19), W_BOLD))
+        p.drawText(QRectF(cx - r, cy + r * 0.10, 2 * r, r * 0.30), Qt.AlignmentFlag.AlignCenter, self.tier.upper())
+        p.end()
+
+
+class MeterBar(QWidget):
+    def __init__(self, height=26):
+        super().__init__()
+        self.value, self.color = 0.0, C_GREEN
+        self.setFixedHeight(height)
+
+    def set_value(self, frac, color):
+        self.value, self.color = max(0.0, min(1.0, frac)), color
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(0, 0, self.width(), self.height())
+        rad = self.height() / 2
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#1C263B"))
+        p.drawRoundedRect(r, rad, rad)
+        if self.value > 0:
+            fw = max(self.height(), self.width() * self.value)
+            p.setBrush(QColor(self.color))
+            p.drawRoundedRect(QRectF(0, 0, fw, self.height()), rad, rad)
+        p.end()
+
+
+def score_color(score):
+    if score >= 800:
+        return C_GREEN
+    if score >= 700:
+        return "#84CC16"
+    if score >= 600:
+        return C_GOLD
+    if score >= 450:
+        return C_AMBER
+    return C_RED
+
+
+def build_stylesheet():
+    variants = {
+        # name: (top, bottom, hover_top, hover_bottom, text)
+        "green":  ("#22C55E", "#15803D", "#34D399", "#16A34A", "#FFFFFF"),
+        "blue":   ("#3B82F6", "#1D4ED8", "#60A5FA", "#2563EB", "#FFFFFF"),
+        "purple": ("#8B5CF6", "#6D28D9", "#A78BFA", "#7C3AED", "#FFFFFF"),
+        "amber":  ("#F59E0B", "#B45309", "#FBBF24", "#D97706", "#1A1100"),
+        "red":    ("#EF4444", "#B91C1C", "#F87171", "#DC2626", "#FFFFFF"),
+        "gold":   ("#FDE047", "#EAB308", "#FEF08A", "#FACC15", "#1A1300"),
+        "teal":   ("#14B8A6", "#0F766E", "#2DD4BF", "#0D9488", "#FFFFFF"),
+        "slate":  ("#273349", "#1E293D", "#334262", "#26334D", "#E5EBF5"),
+    }
+    qss = [f"""
+    QWidget#root {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0C1528, stop:1 #060A14); }}
+    QFrame#card {{ background-color:{C_CARD}; border:1px solid {C_BORDER}; border-radius:26px; }}
+    QFrame#tile {{ background-color:#0F1626; border:1px solid {C_BORDER}; border-radius:20px; }}
+    QFrame#infobox {{ background-color:#0C1322; border:1px solid #2E3E62; border-radius:18px; }}
+    QFrame#modal {{ background-color:#131C30; border:2px solid #34466E; border-radius:30px; }}
+    QFrame#toast {{ background-color:#1B2540; border:2px solid {C_GOLD}; border-radius:22px; }}
+    QPushButton {{ border:none; border-radius:18px; }}
+    QPushButton QLabel {{ background:transparent; }}
+    QPushButton QLabel:disabled {{ color:#4E5A73; }}
+    QSpinBox {{ background-color:#0C1322; color:{C_TEXT}; border:2px solid #2E3E62; border-radius:16px;
+               padding:0px 6px; selection-background-color:{C_PURPLE}; }}
+    QSpinBox::up-button, QSpinBox::down-button {{ width:0px; border:none; }}
+    QSpinBox::up-arrow, QSpinBox::down-arrow {{ width:0px; height:0px; }}
+    QSpinBox:focus {{ border-color:{C_PURPLE}; }}
+    QCheckBox {{ color:#C9D3E6; spacing:14px; background:transparent; }}
+    QCheckBox::indicator {{ width:30px; height:30px; border-radius:9px; border:2px solid #3A4A6E; background:#0C1322; }}
+    QCheckBox::indicator:checked {{ background:{C_PURPLE}; border-color:#A78BFA; }}
+    QScrollArea {{ background:transparent; border:none; }}
+    QScrollArea > QWidget > QWidget {{ background:transparent; }}
+    QScrollBar:vertical {{ width:12px; background:transparent; margin:4px; }}
+    QScrollBar::handle:vertical {{ background:#2E3E62; border-radius:4px; min-height:50px; }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background:transparent; }}
+    QToolTip {{ background:#1B2540; color:{C_TEXT}; border:1px solid #34466E; padding:6px; }}
+    """]
+    for name, (t, b, ht, hb, txt) in variants.items():
+        qss.append(f"""
+        QPushButton[variant="{name}"] {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {t}, stop:1 {b}); }}
+        QPushButton[variant="{name}"]:hover {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {ht}, stop:1 {hb});
+                                               border:2px solid rgba(255,255,255,0.55); }}
+        QPushButton[variant="{name}"]:pressed {{ background:{b}; }}
+        QPushButton[variant="{name}"]:disabled {{ background:#151D2F; border:1px solid #1F2A42; }}
+        QPushButton[variant="{name}"] QLabel {{ color:{txt}; }}
+        QPushButton[variant="{name}"] QLabel:disabled {{ color:#4E5A73; }}
+        """)
+    qss.append(f"""
+    QPushButton[variant="chip"] {{ background:#172036; border:2px solid #2C3A58; border-radius:14px; }}
+    QPushButton[variant="chip"]:hover {{ border-color:{C_PURPLE}; }}
+    QPushButton[variant="chip"] QLabel {{ color:#C9D3E6; }}
+    QPushButton[variant="ghost"] {{ background:transparent; border:2px solid #34466E; border-radius:14px; }}
+    QPushButton[variant="ghost"]:hover {{ border-color:{C_GOLD}; }}
+    QPushButton[variant="ghost"] QLabel {{ color:{C_GOLD}; }}
+    """)
+    return "\n".join(qss)
+
+
+# ------------------------------------------------------------------ overlays --
+class Overlay(QWidget):
+    """Full-canvas dimmed layer with a centred modal card."""
+
+    def __init__(self, parent, width=960):
+        super().__init__(parent)
+        self.setGeometry(0, 0, VW, VH)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(40, 60, 40, 60)
+        outer.addStretch(1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.modal = Card("modal")
+        self.modal.setFixedWidth(width)
+        row.addWidget(self.modal)
+        row.addStretch(1)
+        outer.addLayout(row)
+        outer.addStretch(1)
+        self.body = QVBoxLayout(self.modal)
+        self.body.setContentsMargins(44, 40, 44, 40)
+        self.body.setSpacing(20)
+        self.hide()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(3, 6, 14, 215))
+        p.end()
+
+    def mousePressEvent(self, e):
+        e.accept()                                  # block clicks to the page below
+
+    def clear(self):
+        def wipe(layout):
+            while layout.count():
+                item = layout.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.hide()
+                    w.setParent(None)        # detach now so nothing old is painted
+                    w.deleteLater()
+                elif item.layout():
+                    wipe(item.layout())
+        wipe(self.body)
+
+
+class EventOverlay(Overlay):
+    def __init__(self, parent, on_choose):
+        super().__init__(parent)
+        self.on_choose = on_choose
+        self.key = None
+
+    def show_event(self, g):
+        ev = g.current_event
+        if self.isVisible() and self.key is ev:
+            return
+        self.key = ev
+        self.clear()
+        b = self.body
+        b.addWidget(label(f"QUARTERLY EVENT  ·  AGE {g.age_years}  ·  Q{g.quarter()}", 22, W_BOLD, C_GOLD,
+                          align=Qt.AlignmentFlag.AlignCenter))
+        b.addWidget(label(ev["title"], 50, W_BOLD, C_TEXT, wrap=True, align=Qt.AlignmentFlag.AlignCenter))
+        b.addWidget(label(ev["desc"], 28, W_NORMAL, "#B7C2D8", wrap=True, align=Qt.AlignmentFlag.AlignCenter))
+        if ev.get("info"):
+            box = Card("infobox")
+            bl = QVBoxLayout(box)
+            bl.setContentsMargins(26, 20, 26, 20)
+            bl.addWidget(label("WHY IT MATTERS", 19, W_BOLD, C_GOLD))
+            bl.addWidget(label(ev["info"], 23, W_NORMAL, "#C9D3E6", wrap=True))
+            b.addWidget(box)
+
+        status = (f"Cash {money(g.cash)}   ·   Card credit left {money(g.card_available())}   ·   "
+                  f"Happiness {g.happiness}   ·   Credit {g.credit_score}")
+        b.addWidget(label(status, 21, W_SEMI, C_MUTED, wrap=True, align=Qt.AlignmentFlag.AlignCenter))
+        b.addSpacing(6)
+
+        tone_variant = {"cash": "green", "card": "purple", "loan": "amber", "bad": "red",
+                        "good": "teal", "info": "blue", "skip": "slate"}
+        for i, o in enumerate(ev["options"]):
+            reason = g.option_block_reason(o)
+            text = o["label"] + (f"\n(unavailable: {reason})" if reason else "")
+            btn = WrapButton(text, tone_variant.get(o["tone"], "slate"), 26, W_SEMI, height=104)
+            btn.setEnabled(reason is None)
+            btn.clicked.connect(lambda _=False, idx=i: self.on_choose(idx))
+            b.addWidget(btn)
+        self.show()
+        self.raise_()
+
+
+class PopupOverlay(Overlay):
+    KIND_COLORS = {"warning": C_RED, "success": C_GREEN, "info": C_BLUE, "gold": C_GOLD}
+
+    def __init__(self, parent, on_close):
+        super().__init__(parent, width=980)
+        self.on_close = on_close
+
+    def show_popup(self, title, body_html, kind="info", buttons=None):
+        self.clear()
+        b = self.body
+        stripe = QFrame()
+        stripe.setFixedHeight(8)
+        stripe.setStyleSheet(f"background:{self.KIND_COLORS.get(kind, C_BLUE)}; border-radius:4px;")
+        b.addWidget(stripe)
+        b.addWidget(label(title, 46, W_BOLD, C_TEXT, wrap=True, align=Qt.AlignmentFlag.AlignCenter))
+
+        body = label(body_html, 25, W_NORMAL, "#D3DBEA", wrap=True, rich=True)
+        body.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        holder = QWidget()
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 18, 0)
+        hl.addWidget(body)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(holder)
+        need = body.heightForWidth(980 - 88 - 30) + 36
+        scroll.setFixedHeight(max(120, min(1180, need)))
+        b.addWidget(scroll)
+
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        for text, variant, cb in (buttons or [("Got it", "gold", None)]):
+            btn = WrapButton(text, variant, 28, W_BOLD, height=96)
+            btn.setEnabled(cb is not False)
+            btn.clicked.connect(lambda _=False, c=cb: self._clicked(c))
+            row.addWidget(btn)
+        b.addLayout(row)
+        self.show()
+        self.raise_()
+
+    def _clicked(self, cb):
+        self.hide()
+        if callable(cb):
+            cb()
+        self.on_close()
+
+
+class Toast(QFrame):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("toast")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(28, 18, 28, 18)
+        self.lbl = label("", 25, W_SEMI, C_TEXT, wrap=True, align=Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.lbl)
+        self.queue = []
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self._next)
+        self.hide()
+
+    def push(self, text, tone="gold"):
+        self.queue.append((text, tone))
+        if not self.isVisible():
+            self._next()
+
+    def _next(self):
+        if not self.queue:
+            self.hide()
+            return
+        text, tone = self.queue.pop(0)
+        color = TONE_COLORS.get(tone, C_GOLD)
+        self.setStyleSheet(f"QFrame#toast {{ background-color:#1B2540; border:2px solid {color}; border-radius:22px; }}")
+        self.lbl.setText(text)
+        w = 900
+        h = self.lbl.heightForWidth(w - 56) + 40
+        self.setGeometry((VW - w) // 2, 26, w, max(80, h))
+        self.show()
+        self.raise_()
+        self.timer.start(2800)
+
+    def mousePressEvent(self, e):
+        self.timer.stop()
+        self._next()
+
+
+# --------------------------------------------------------------------- pages --
+class StartPage(QWidget):
+    def __init__(self, on_start, on_guide):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(56, 90, 56, 80)
+        lay.setSpacing(26)
+        lay.addWidget(label("FINANCIAL ODYSSEY", 74, W_BOLD, C_GOLD, align=Qt.AlignmentFlag.AlignCenter, wrap=True))
+        lay.addWidget(label("Ages 18 to 65  ·  one quarter at a time", 32, W_MED, C_MUTED,
+                            align=Qt.AlignmentFlag.AlignCenter, wrap=True))
+        card = Card()
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(44, 40, 44, 40)
+        cl.setSpacing(24)
+        cl.addWidget(label("Happy 18th birthday!", 44, W_BOLD, C_TEXT, wrap=True))
+        cl.addWidget(label("Your first credit card was just approved. Earn, spend, borrow and invest your way "
+                           "to retirement — without going broke, burning out or wrecking your credit.",
+                           30, W_NORMAL, "#B7C2D8", wrap=True))
+        rules = [
+            ("1 turn = 3 months.", "Each quarter you're paid, compulsory rent, groceries & bills are taken, and a life event happens."),
+            ("Happiness drains every quarter.", "Buy leisure to refill it. At 0 for a full year you die of depression."),
+            ("Bills come due.", "Card and loan balances post a minimum payment. Pay it before advancing to grow your credit."),
+            ("Credit = cheaper money.", "Higher scores unlock lower interest, bigger limits and loans. Capped at 700 for your first 5 years."),
+            ("Costs rise faster than pay.", "Inflation outpaces raises, so certifications and investing matter."),
+            ("Hit $1,000,000 net worth", "and you may retire early. Otherwise you retire at 65."),
         ]
-        iy = 735
-        for iline in info_lines:
-            icol = ACCENT if "---" in iline else WHITE
-            if "How to" in iline:
-                icol = GREEN
-            it = FONT_SMALL.render(iline, True, icol)
-            surface.blit(it, (100, iy))
-            iy += 35
-
-    stat_txt = f"Cash: ${game.cash:,}  |  Debt: ${game.debt:,}  |  Happiness: {game.happiness}  |  Credit: {game.credit_score}"
-    st = FONT_REGULAR.render(stat_txt, True, ACCENT)
-    surface.blit(st, (VIRTUAL_WIDTH // 2 - st.get_width() // 2, 1070))
-
-    for btn in game.event_buttons:
-        btn.check_hover(mouse_pos)
-        btn.draw(surface)
-        buttons.append(btn)
+        for head, text in rules:
+            cl.addWidget(label(f"<b style='color:{C_GOLD}'>{esc(head)}</b> {esc(text)}", 28, W_NORMAL, "#D3DBEA",
+                               wrap=True, rich=True))
+        lay.addWidget(card)
+        lay.addStretch(1)
+        guide = WrapButton("Credit 101 — how credit scores work", "ghost", 30, W_BOLD, height=96)
+        guide.clicked.connect(on_guide)
+        lay.addWidget(guide)
+        start = WrapButton("BEGIN YOUR JOURNEY", "gold", 46, W_BOLD, height=140)
+        start.clicked.connect(on_start)
+        lay.addWidget(start)
 
 
-def draw_game_over_screen(surface, game, buttons, mouse_pos):
-    surface.fill(BG_COLOR)
+class Tile(Card):
+    def __init__(self, caption):
+        super().__init__("tile")
+        self.setFixedHeight(132)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 14, 22, 14)
+        lay.setSpacing(2)
+        self.cap = FitLabel(caption, 19, W_BOLD, C_MUTED)
+        self.val = FitLabel("", 40, W_BOLD, C_TEXT)
+        self.sub = FitLabel("", 19, W_MED, C_MUTED)
+        lay.addWidget(self.cap)
+        lay.addWidget(self.val)
+        lay.addWidget(self.sub)
 
-    card_rect = pygame.Rect(70, 250, 940, 1400)
-    pygame.draw.rect(surface, CARD_BG, card_rect, border_radius=24)
+    def set(self, value, color, sub, sub_color=C_MUTED):
+        self.val.setText(value)
+        set_color(self.val, color)
+        self.sub.setText(sub)
+        set_color(self.sub, sub_color)
 
-    if game.death_reason in ("RETIREMENT", "EARLY_RETIREMENT"):
-        borderColor = ACCENT
-        title_text = "CONGRATULATIONS!"
-        sub_text = "Early Retirement Achieved!" if game.death_reason == "EARLY_RETIREMENT" else "You reached Age 65 safely!"
-    elif game.death_reason == "IRS_SEIZURE":
-        borderColor = RED
-        title_text = "IRS SEIZED YOUR ASSETS!"
-        sub_text = "Credit score stayed under 299 for 2 years. Died in prison!"
-    else:
-        borderColor = RED
-        title_text = "DIED OF DEPRESSION!"
-        sub_text = "Happiness remained at 0 for over a year."
 
-    pygame.draw.rect(surface, borderColor, card_rect, 4, border_radius=24)
+class Dashboard(QWidget):
+    def __init__(self, ui):
+        super().__init__()
+        self.ui = ui
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(36, 30, 36, 30)
+        lay.setSpacing(16)
 
-    t_main = FONT_TITLE.render(title_text, True, borderColor)
-    surface.blit(t_main, (VIRTUAL_WIDTH // 2 - t_main.get_width() // 2, 340))
+        # --- header -----------------------------------------------------------
+        hdr = Card()
+        hdr.setFixedHeight(150)
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(34, 18, 34, 18)
+        left = QVBoxLayout()
+        left.setSpacing(0)
+        self.age_lbl = FitLabel("", 56, W_BOLD, C_GOLD)
+        self.sub_lbl = FitLabel("", 22, W_MED, C_MUTED)
+        left.addWidget(self.age_lbl)
+        left.addWidget(self.sub_lbl)
+        right = QVBoxLayout()
+        right.setSpacing(0)
+        ar = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        self.nw_cap = FitLabel("NET WORTH", 22, W_BOLD, C_MUTED, align=ar)
+        self.nw_lbl = FitLabel("", 54, W_BOLD, C_GREEN, align=ar)
+        right.addWidget(self.nw_cap)
+        right.addWidget(self.nw_lbl)
+        hl.addLayout(left, 1)
+        hl.addLayout(right, 1)
+        lay.addWidget(hdr)
 
-    t_sub = FONT_MEDIUM.render(sub_text, True, WHITE)
-    surface.blit(t_sub, (VIRTUAL_WIDTH // 2 - t_sub.get_width() // 2, 440))
+        # --- credit + happiness -------------------------------------------------
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        cc = Card()
+        cc.setFixedHeight(372)
+        cl = QVBoxLayout(cc)
+        cl.setContentsMargins(26, 18, 26, 18)
+        cl.setSpacing(6)
+        top = QHBoxLayout()
+        top.addWidget(label("CREDIT SCORE", 22, W_BOLD, C_MUTED))
+        top.addStretch(1)
+        gbtn = WrapButton("Guide", "ghost", 20, W_BOLD, height=44)
+        gbtn.setFixedWidth(110)
+        gbtn.clicked.connect(ui.show_guide)
+        top.addWidget(gbtn)
+        cl.addLayout(top)
+        self.gauge = CreditGauge()
+        self.gauge.setFixedHeight(196)
+        cl.addWidget(self.gauge)
+        self.rates_lbl = FitLabel("", 21, W_SEMI, "#C9D3E6", align=Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(self.rates_lbl)
+        self.credit_note = label("", 19, W_MED, C_MUTED, wrap=True, align=Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(self.credit_note)
+        cl.addStretch(1)
+        row.addWidget(cc, 1)
 
-    nw = game.get_net_worth()
-    final_score = game.final_score()
+        hc = Card()
+        hc.setFixedHeight(372)
+        hcl = QVBoxLayout(hc)
+        hcl.setContentsMargins(26, 18, 26, 20)
+        hcl.setSpacing(8)
+        hcl.addWidget(label("HAPPINESS", 22, W_BOLD, C_MUTED))
+        self.happy_val = FitLabel("", 66, W_BOLD, C_GREEN)
+        hcl.addWidget(self.happy_val)
+        self.happy_bar = MeterBar(26)
+        hcl.addWidget(self.happy_bar)
+        self.happy_note = label("", 20, W_MED, C_MUTED, wrap=True)
+        hcl.addWidget(self.happy_note)
+        hcl.addStretch(1)
+        self.buy_btn = WrapButton("", "green", 24, W_BOLD, height=92)
+        self.buy_btn.clicked.connect(lambda: ui.do(ui.game.buy_happiness))
+        hcl.addWidget(self.buy_btn)
+        row.addWidget(hc, 1)
+        lay.addLayout(row)
 
-    stats = [
-        ("Final Age Reached", f"{game.age_years}", WHITE),
-        ("Final Net Worth", f"${nw:,}", GREEN if nw >= 0 else RED),
-        ("Final Credit Score", f"{game.credit_score} / 1000", ACCENT),
-        ("Remaining Cash", f"${game.cash:,}", GREEN),
-        ("Remaining Debt", f"${game.debt:,}", RED if game.debt > 0 else GRAY),
-        ("FINAL SCORE", f"{final_score:,} PTS", ACCENT)
-    ]
+        # --- money tiles --------------------------------------------------------
+        grid = QGridLayout()
+        grid.setSpacing(14)
+        self.t_cash, self.t_inv, self.t_card = Tile("CASH"), Tile("INVESTMENTS"), Tile("CREDIT CARD")
+        self.t_loan, self.t_inc, self.t_ess = Tile("BANK LOANS"), Tile("PAY / QUARTER"), Tile("ESSENTIALS / QTR")
+        for i, t in enumerate([self.t_cash, self.t_inv, self.t_card, self.t_loan, self.t_inc, self.t_ess]):
+            grid.addWidget(t, i // 3, i % 3)
+        lay.addLayout(grid)
 
-    y = 560
-    for label, val, col in stats:
-        f_lbl = FONT_TITLE if label == "FINAL SCORE" else FONT_HEADER
-        f_val = FONT_TITLE if label == "FINAL SCORE" else FONT_HEADER
+        # --- bills ----------------------------------------------------------------
+        bc = Card()
+        bc.setFixedHeight(168)
+        bl = QHBoxLayout(bc)
+        bl.setContentsMargins(28, 16, 28, 16)
+        bl.setSpacing(20)
+        bleft = QVBoxLayout()
+        bleft.setSpacing(2)
+        bleft.addWidget(FitLabel("MINIMUM PAYMENT DUE THIS QUARTER", 20, W_BOLD, C_MUTED))
+        self.due_val = FitLabel("", 42, W_BOLD, C_TEXT)
+        bleft.addWidget(self.due_val)
+        self.due_note = label("", 19, W_MED, C_MUTED, wrap=True)
+        bleft.addWidget(self.due_note)
+        bl.addLayout(bleft, 3)
+        bright = QVBoxLayout()
+        bright.setSpacing(10)
+        self.due_chip = FitLabel("", 22, W_BOLD, C_TEXT, align=Qt.AlignmentFlag.AlignCenter)
+        self.due_chip.setFixedHeight(46)
+        bright.addWidget(self.due_chip)
+        self.autopay = QCheckBox("Charge essentials to card (builds credit)")
+        self.autopay.setFont(make_font(19, W_MED))
+        self.autopay.toggled.connect(self._toggle_autopay)
+        bright.addWidget(self.autopay)
+        bl.addLayout(bright, 2)
+        lay.addWidget(bc)
 
-        tl = f_lbl.render(label, True, GRAY if label != "FINAL SCORE" else ACCENT)
-        tv = f_val.render(val, True, col)
+        # --- actions --------------------------------------------------------------
+        ac = Card()
+        al = QVBoxLayout(ac)
+        al.setContentsMargins(26, 18, 26, 20)
+        al.setSpacing(14)
+        arow = QHBoxLayout()
+        arow.setSpacing(10)
+        arow.addWidget(label("AMOUNT", 22, W_BOLD, C_MUTED))
+        minus = WrapButton("−", "chip", 32, W_BOLD, height=62)
+        minus.setFixedWidth(66)
+        minus.clicked.connect(lambda: self.amount.stepBy(-1))
+        arow.addWidget(minus)
+        self.amount = QSpinBox()
+        self.amount.setRange(0, 10_000_000)
+        self.amount.setSingleStep(100)
+        self.amount.setValue(500)
+        self.amount.setPrefix("$ ")
+        self.amount.setGroupSeparatorShown(True)
+        # NOTE: don't use NoButtons here - with a stylesheet Qt 6.12 collapses the text field;
+        # the arrow buttons are hidden via the stylesheet instead.
+        self.amount.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.amount.setFont(make_font(30, W_BOLD))
+        self.amount.setFixedSize(230, 62)
+        self.amount.valueChanged.connect(lambda _: self.refresh())
+        arow.addWidget(self.amount)
+        plus = WrapButton("+", "chip", 32, W_BOLD, height=62)
+        plus.setFixedWidth(66)
+        plus.clicked.connect(lambda: self.amount.stepBy(1))
+        arow.addWidget(plus)
+        for txt, val in (("$100", 100), ("$500", 500), ("$1k", 1000), ("$5k", 5000), ("All", None)):
+            chip = WrapButton(txt, "chip", 22, W_BOLD, height=62)
+            chip.clicked.connect(lambda _=False, v=val: self._set_amount(v))
+            arow.addWidget(chip)
+        al.addLayout(arow)
 
-        surface.blit(tl, (120, y))
-        surface.blit(tv, (960 - tv.get_width(), y))
-        y += 90
+        agrid = QGridLayout()
+        agrid.setSpacing(12)
+        self.b_invest = WrapButton("", "blue", 23, W_BOLD, height=88)
+        self.b_withdraw = WrapButton("", "purple", 23, W_BOLD, height=88)
+        self.b_loan = WrapButton("", "amber", 23, W_BOLD, height=88)
+        self.b_pay = WrapButton("", "teal", 23, W_BOLD, height=88)
+        self.b_min = WrapButton("", "green", 23, W_BOLD, height=88)
+        self.b_all = WrapButton("", "teal", 23, W_BOLD, height=88)
+        self.b_invest.clicked.connect(lambda: ui.do(lambda: ui.game.invest(self.amount.value())))
+        self.b_withdraw.clicked.connect(lambda: ui.do(lambda: ui.game.withdraw(self.amount.value())))
+        self.b_loan.clicked.connect(lambda: ui.do(lambda: ui.game.take_loan(self.amount.value())))
+        self.b_pay.clicked.connect(lambda: ui.do(lambda: ui.game.pay_debt(self.amount.value())))
+        self.b_min.clicked.connect(lambda: ui.do(ui.game.pay_minimum))
+        self.b_all.clicked.connect(lambda: ui.do(ui.game.pay_all))
+        for i, b in enumerate([self.b_invest, self.b_withdraw, self.b_loan, self.b_min, self.b_pay, self.b_all]):
+            agrid.addWidget(b, i // 3, i % 3)
+        al.addLayout(agrid)
+        lay.addWidget(ac)
 
-    restart_btn = Button(190, 1420, 700, 120, "PLAY AGAIN", GREEN, DARK_GREEN, FONT_TITLE)
-    restart_btn.action = "restart"
-    restart_btn.check_hover(mouse_pos)
-    restart_btn.draw(surface)
-    buttons.append(restart_btn)
+        # --- log ------------------------------------------------------------------
+        lc = Card()
+        ll = QVBoxLayout(lc)
+        ll.setContentsMargins(28, 16, 18, 16)
+        ll.setSpacing(8)
+        ll.addWidget(label("ACTIVITY LOG", 22, W_BOLD, C_MUTED))
+        self.log_lbl = label("", 21, W_NORMAL, C_TEXT, wrap=True, rich=True)
+        self.log_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        holder = QWidget()
+        hl2 = QVBoxLayout(holder)
+        hl2.setContentsMargins(0, 0, 12, 0)
+        hl2.addWidget(self.log_lbl)
+        hl2.addStretch(1)
+        self.log_scroll = QScrollArea()
+        self.log_scroll.setWidgetResizable(True)
+        self.log_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.log_scroll.setWidget(holder)
+        ll.addWidget(self.log_scroll)
+        lay.addWidget(lc, 1)
+
+        # --- bottom -----------------------------------------------------------------
+        brow = QHBoxLayout()
+        brow.setSpacing(16)
+        self.retire_btn = WrapButton("RETIRE EARLY", "teal", 30, W_BOLD, height=116)
+        self.retire_btn.clicked.connect(ui.confirm_retire)
+        self.retire_btn.setFixedWidth(330)
+        brow.addWidget(self.retire_btn)
+        self.next_btn = WrapButton("ADVANCE 3 MONTHS  »", "gold", 44, W_BOLD, height=116)
+        self.next_btn.clicked.connect(ui.advance)
+        brow.addWidget(self.next_btn)
+        lay.addLayout(brow)
+
+    # ---------------------------------------------------------------------------
+    def _set_amount(self, v):
+        g = self.ui.game
+        self.amount.setValue(max(0, g.cash) if v is None else v)
+
+    def _toggle_autopay(self, on):
+        g = self.ui.game
+        if g.essentials_on_card != on:
+            g.essentials_on_card = on
+            g.add_log("Essentials will now be charged to your card — pay the statement each quarter!"
+                      if on else "Essentials will now be paid from cash", "card" if on else "info")
+            self.refresh()
+
+    def refresh(self):
+        g = self.ui.game
+        amt = self.amount.value()
+
+        years_left = 65 - g.age_years
+        self.age_lbl.setText(f"AGE {g.age_years}  ·  Q{g.quarter()}")
+        self.sub_lbl.setText(f"{years_left} years to retirement  ·  Turn {g.turns_played}")
+        nw = g.get_net_worth()
+        self.nw_lbl.setText(money(nw))
+        set_color(self.nw_lbl, C_GREEN if nw >= 0 else C_RED_L)
+
+        t = g.tier()
+        col = score_color(g.credit_score)
+        self.gauge.set_score(g.credit_score, t[1], col)
+        self.rates_lbl.setText(f"Loans {t[2]:.2%}/qtr  ·  Card {t[3]:.2%}/qtr")
+        notes = []
+        if g.history_capped():
+            notes.append(f"History cap: max 700 for {g.HISTORY_CAP_TURNS - g.turns_played} more quarters")
+        if g.streak:
+            notes.append(f"On-time streak: {g.streak}")
+        if g.low_credit_turns or g.credit_score < g.IRS_SCORE:
+            notes.append(f"IRS SEIZURE RISK: {g.low_credit_turns}/{g.IRS_TURNS} strikes")
+        self.credit_note.setText("  ·  ".join(notes) if notes else "Pay your minimum each quarter to climb")
+        set_color(self.credit_note, C_RED_L if g.low_credit_turns or g.credit_score < g.IRS_SCORE else C_MUTED)
+
+        hcol = C_GREEN if g.happiness > 50 else (C_GOLD if g.happiness > 25 else C_RED)
+        self.happy_val.setText(f"{g.happiness} / 100")
+        set_color(self.happy_val, hcol)
+        self.happy_bar.set_value(g.happiness / 100, hcol)
+        if g.zero_happiness_turns:
+            self.happy_note.setText(f"DEPRESSION WARNING {g.zero_happiness_turns}/{g.DEPRESSION_TURNS} — "
+                                    "buy leisure now or you won't survive the year!")
+            set_color(self.happy_note, C_RED_L)
+        else:
+            self.happy_note.setText(f"Life & work stress drain about {g.happiness_decay()} every quarter. "
+                                    f"Zero for a year is fatal.")
+            set_color(self.happy_note, C_MUTED)
+        cost = g.happiness_cost()
+        self.buy_btn.setText(f"Buy leisure & hobbies\n-{money(cost)}  ·  +{g.HAPPY_PTS} happiness")
+        self.buy_btn.setEnabled(g.cash >= cost and g.happiness < 100)
+
+        od = g.overdraft_used()
+        self.t_cash.set(money(g.cash), C_RED_L if g.cash < 0 else C_GREEN,
+                        f"OVERDRAFT {money(od)} / {money(g.OVERDRAFT_LIMIT)}" if od else
+                        f"Overdraft limit {money(g.OVERDRAFT_LIMIT)}", C_RED_L if od else C_MUTED)
+        fee_txt = "No withdrawal fee (60+)" if g.withdraw_fee_rate() == 0 else "5% fee to withdraw before 60"
+        self.t_inv.set(money(g.investments), "#60A5FA", fee_txt)
+        util = g.card / max(1, g.card_limit())
+        self.t_card.set(money(g.card), "#A78BFA" if g.card <= g.card_limit() else C_RED_L,
+                        f"{money(g.card_available())} free of {money(g.card_limit())}",
+                        C_RED_L if util > 0.9 else C_MUTED)
+        cap = g.loan_capacity()
+        self.t_loan.set(money(g.loans), C_AMBER if g.loans else C_DIM,
+                        f"Can borrow {money(g.loan_room())}" if cap else "Loans need a 450+ score",
+                        C_MUTED if cap else C_RED_L)
+        inc_sub = f"Certifications {g.courses_taken}/{g.MAX_COURSES}"
+        if g.layoff_turns:
+            inc_sub = f"{int(g.layoff_mult * 100)}% pay for {g.layoff_turns} more qtr"
+        elif not g.has_car:
+            inc_sub += "  ·  no car -10%"
+        self.t_inc.set(money(g.quarterly_income()), C_GOLD, inc_sub, C_AMBER if g.layoff_turns else C_MUTED)
+        items = g.essentials_breakdown()
+        self.t_ess.set(money(g.essentials_total()), "#FCA5A5", "Rent, food & bills — compulsory")
+        self.t_ess.setToolTip("\n".join(f"{n}: {money(v)}" for n, v in items))
+
+        # bills
+        rem = g.remaining_due()
+        if g.min_due <= 0:
+            self.due_val.setText("$0 — no bill")
+            set_color(self.due_val, C_MUTED)
+            self.due_note.setText("No card or loan balance on your last statement. Use your card and pay it "
+                                  "back to build credit.")
+            self.due_chip.setText("NO BILL")
+            self.due_chip.setStyleSheet(f"color:{C_MUTED}; background:#1A2337; border-radius:14px;")
+        elif rem <= 0:
+            self.due_val.setText(f"{money(g.min_due)}  ✓ paid")
+            set_color(self.due_val, C_GREEN)
+            extra = ("Statement fully paid — no card interest." if g.paid_card_this_qtr >= g.stmt_card
+                     else f"Pay the full {money(g.stmt_card)} statement to skip card interest.")
+            self.due_note.setText(f"Paid {money(g.paid_this_qtr)} this quarter. {extra}")
+            self.due_chip.setText("ON TIME")
+            self.due_chip.setStyleSheet(f"color:#04130A; background:{C_GREEN}; border-radius:14px;")
+        else:
+            self.due_val.setText(f"{money(rem)} still due")
+            set_color(self.due_val, C_GOLD)
+            self.due_note.setText(f"Minimum {money(g.min_due)}, paid {money(g.paid_this_qtr)}. Advance now = "
+                                  f"{'LATE (-20)' if g.paid_this_qtr else 'MISSED (-50)'}.")
+            self.due_chip.setText("UNPAID")
+            self.due_chip.setStyleSheet(f"color:#1A0505; background:{C_RED_L}; border-radius:14px;")
+        if self.autopay.isChecked() != g.essentials_on_card:
+            self.autopay.blockSignals(True)
+            self.autopay.setChecked(g.essentials_on_card)
+            self.autopay.blockSignals(False)
+
+        # action buttons
+        fee = int(min(amt, g.investments) * g.withdraw_fee_rate())
+        self.b_invest.setText(f"Invest\n{money(amt)}")
+        self.b_invest.setEnabled(0 < amt <= g.cash)
+        self.b_withdraw.setText(f"Withdraw\n{money(min(amt, g.investments))}" + (f" (-{money(fee)} fee)" if fee else ""))
+        self.b_withdraw.setEnabled(g.investments > 0 and amt > 0)
+        self.b_loan.setText(f"Borrow\n{money(amt)} @ {g.loan_rate():.2%}")
+        lr = g.loan_block_reason(amt)
+        self.b_loan.setEnabled(amt > 0 and lr is None)
+        self.b_loan.setToolTip(lr or "2% origination fee is added to the loan")
+        owed = g.card + g.loans
+        self.b_pay.setText(f"Pay debt\n{money(min(amt, owed))}")
+        self.b_pay.setEnabled(owed > 0 and g.cash > 0 and amt > 0)
+        self.b_min.setText(f"Pay minimum\n{money(rem)}" if rem else "Minimum\ncovered")
+        self.b_min.setEnabled(rem > 0 and g.cash > 0)
+        self.b_all.setText(f"Pay off all\n{money(owed)}")
+        self.b_all.setEnabled(owed > 0 and g.cash > 0)
+
+        # log (newest first)
+        lines = []
+        for when, text, tone in reversed(g.log[-60:]):
+            lines.append(f"<span style='color:{C_DIM}'>{esc(when)}</span>&nbsp;&nbsp;"
+                         f"<span style='color:{TONE_COLORS.get(tone, C_TEXT)}'>{esc(text)}</span>")
+        self.log_lbl.setText("<br>".join(lines))
+
+        self.retire_btn.setVisible(g.get_net_worth() >= g.MILLION)
+        self.next_btn.setEnabled(g.state == "main")
+
+
+class GameOverPage(QWidget):
+    def __init__(self, on_restart):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(56, 90, 56, 80)
+        lay.setSpacing(24)
+        self.title = label("", 70, W_BOLD, C_GOLD, wrap=True, align=Qt.AlignmentFlag.AlignCenter)
+        self.sub = label("", 30, W_MED, "#C9D3E6", wrap=True, align=Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.title)
+        lay.addWidget(self.sub)
+        self.card = Card()
+        cl = QVBoxLayout(self.card)
+        cl.setContentsMargins(44, 34, 44, 34)
+        cl.setSpacing(4)
+        self.rows = []
+        for _ in range(9):
+            r = QHBoxLayout()
+            a = FitLabel("", 30, W_SEMI, C_MUTED)
+            b = FitLabel("", 34, W_BOLD, C_TEXT, align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            r.addWidget(a, 3)
+            r.addWidget(b, 2)
+            cl.addLayout(r)
+            self.rows.append((a, b))
+        cl.addSpacing(16)
+        self.score_cap = FitLabel("FINAL SCORE", 30, W_BOLD, C_GOLD, align=Qt.AlignmentFlag.AlignCenter)
+        self.score = FitLabel("", 80, W_BOLD, C_GOLD, align=Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(self.score_cap)
+        cl.addWidget(self.score)
+        lay.addWidget(self.card)
+        self.ach = label("", 24, W_NORMAL, "#C9D3E6", wrap=True, rich=True, align=Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.ach)
+        lay.addStretch(1)
+        btn = WrapButton("PLAY AGAIN", "green", 50, W_BOLD, height=140)
+        btn.clicked.connect(on_restart)
+        lay.addWidget(btn)
+
+    def show_game(self, g):
+        r = g.end_reason
+        if r in ("RETIREMENT", "EARLY_RETIREMENT"):
+            self.title.setText("CONGRATULATIONS!")
+            set_color(self.title, C_GOLD)
+            self.sub.setText("You retired early as a millionaire!" if r == "EARLY_RETIREMENT"
+                             else "You made it to 65 and retired.")
+        elif r == "IRS_SEIZURE":
+            self.title.setText("ASSETS SEIZED")
+            set_color(self.title, C_RED_L)
+            self.sub.setText("Your credit score stayed under 300 for two years and the IRS took everything.")
+        else:
+            self.title.setText("LOST TO DEPRESSION")
+            set_color(self.title, C_RED_L)
+            self.sub.setText("Your happiness stayed at 0 for a full year. Money matters — but so does living.")
+        nw = g.get_net_worth()
+        mult = f"x{0.5 + g.credit_score / 2000:.2f} credit multiplier" if r in ("RETIREMENT", "EARLY_RETIREMENT") \
+            else f"-{money(g.DEATH_PENALTY)} penalty"
+        data = [
+            ("Age reached", str(g.age_years), C_TEXT),
+            ("Net worth", money(nw), C_GREEN if nw >= 0 else C_RED_L),
+            ("Credit score", f"{g.credit_score} ({g.tier()[1]})", score_color(g.credit_score)),
+            ("Investments", money(g.investments), "#60A5FA"),
+            ("Debt remaining", money(g.card + g.loans + g.overdraft_used()), C_RED_L if g.total_debt() else C_DIM),
+            ("Lifetime interest paid", money(g.stats["interest"]), C_RED_L),
+            ("Lifetime fees paid", money(g.stats["fees"]), C_RED_L),
+            ("Payments on time / late / missed", f"{g.stats['on_time']} / {g.stats['late']} / {g.stats['missed']}", C_TEXT),
+            ("Score modifier", mult, C_GOLD),
+        ]
+        for (a, b), (k, v, c) in zip(self.rows, data):
+            a.setText(k)
+            b.setText(v)
+            set_color(b, c)
+        self.score.setText(f"{g.final_score():,}")
+        if g.achievements:
+            names = "  ·  ".join(esc(g.ACHIEVEMENTS[k][0]) for k in g.achievements)
+            self.ach.setText(f"<b style='color:{C_GOLD}'>Achievements ({len(g.achievements)}/{len(g.ACHIEVEMENTS)})</b><br>{names}")
+        else:
+            self.ach.setText("No achievements this time.")
+
+
+# ---------------------------------------------------------------- controller --
+class GameUI(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("root")
+        self.setFixedSize(VW, VH)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(build_stylesheet())
+        self.setFont(make_font(24))
+        self.game = LifeGame()
+        self.popup_queue = []
+
+        self.stack = QStackedWidget(self)
+        self.stack.setGeometry(0, 0, VW, VH)
+        self.start_page = StartPage(self.start_game, self.show_guide)
+        self.dash = Dashboard(self)
+        self.over_page = GameOverPage(self.restart)
+        for w in (self.start_page, self.dash, self.over_page):
+            self.stack.addWidget(w)
+
+        self.event_overlay = EventOverlay(self, self.choose)
+        self.popup = PopupOverlay(self, self._pump)
+        self.toast = Toast(self)
+
+    # ------------------------------------------------------------------------
+    def start_game(self):
+        self.game.start()
+        self.stack.setCurrentWidget(self.dash)
+        self.after()
+
+    def restart(self):
+        self.game.reset()
+        self.event_overlay.hide()
+        self.popup_queue.clear()
+        self.dash.amount.setValue(500)
+        self.start_game()
+
+    def do(self, fn):
+        res = fn()
+        if isinstance(res, tuple) and not res[0] and res[1]:
+            self.toast.push(res[1], "bad")
+        self.after()
+
+    def choose(self, idx):
+        self.do(lambda: self.game.choose_option(idx))
+
+    def advance(self):
+        g = self.game
+        rem = g.remaining_due()
+        if g.state == "main" and rem > 0:
+            hit = "LATE payment (-20 credit)" if g.paid_this_qtr else "MISSED payment (-50 credit)"
+            can_pay = g.cash >= rem
+            body = (f"<p>Your minimum payment of <b>{money(g.min_due)}</b> isn't covered yet — "
+                    f"<b style='color:{C_GOLD}'>{money(rem)}</b> is still due.</p>"
+                    f"<p>If you advance now it counts as a <b style='color:{C_RED_L}'>{hit}</b>.</p>"
+                    + ("" if can_pay else f"<p style='color:{C_RED_L}'>You don't have enough cash to cover it. "
+                       "Consider withdrawing investments or taking a cheaper bank loan to pay the card.</p>"))
+            self.popup_queue.insert(0, ("Payment not covered", body, "warning", [
+                (f"Pay {money(rem)} now", "green", self._pay_and_advance if can_pay else False),
+                ("Advance anyway", "red", self._advance_now),
+                ("Cancel", "slate", None)]))
+            self._pump()
+            return
+        self._advance_now()
+
+    def _pay_and_advance(self):
+        self.game.pay_minimum()
+        self._advance_now()
+
+    def _advance_now(self):
+        self.game.next_turn()
+        self.after()
+
+    def confirm_retire(self):
+        g = self.game
+        mult = 0.5 + g.credit_score / 2000
+        body = (f"<p>Retire now with a net worth of <b>{money(g.get_net_worth())}</b>?</p>"
+                f"<p>Your final score will be net worth x {mult:.2f} (credit multiplier) = "
+                f"<b style='color:{C_GOLD}'>{int(g.get_net_worth() * mult):,}</b>.</p>")
+        self.popup_queue.insert(0, ("Retire early?", body, "gold", [
+            ("Retire now", "teal", lambda: self.do(g.retire_early)),
+            ("Keep working", "slate", None)]))
+        self._pump()
+
+    def show_guide(self):
+        self.popup_queue.insert(0, ("Credit 101", self.game.credit_guide_html(), "gold", None))
+        self._pump()
+
+    # ------------------------------------------------------------------------
+    def after(self):
+        g = self.game
+        for text, tone in g.toasts:
+            self.toast.push(text, tone)
+        g.toasts.clear()
+        for p in g.popups:
+            btns = None
+            if p.get("guide"):
+                btns = [("Open full credit guide", "ghost", self.show_guide), ("Got it", "gold", None)]
+            self.popup_queue.append((p["title"], p["body"], p.get("kind", "info"), btns))
+        g.popups.clear()
+
+        if g.state == "game_over":
+            self.event_overlay.hide()
+            self.popup_queue = [q for q in self.popup_queue if q[0] == "Credit 101"]
+            self.over_page.show_game(g)
+            self.stack.setCurrentWidget(self.over_page)
+        elif g.state in ("main", "event"):
+            self.dash.refresh()
+            if g.state == "event":
+                self.event_overlay.show_event(g)
+            else:
+                self.event_overlay.hide()
+        self._pump()
+
+    def _pump(self):
+        if self.popup.isVisible() or not self.popup_queue:
+            if self.popup.isVisible():
+                self.popup.raise_()
+            return
+        title, body, kind, btns = self.popup_queue.pop(0)
+        self.popup.show_popup(title, body, kind, btns)
+        self.toast.raise_()
+
+
+class ScaledView(QGraphicsView):
+    """Uniformly scales the fixed 1080x1920 canvas into any window, centred, letterboxed."""
+
+    def __init__(self, root):
+        super().__init__()
+        self.scene_ = QGraphicsScene(self)
+        self.proxy = self.scene_.addWidget(root)
+        self.setScene(self.scene_)
+        self.setSceneRect(0, 0, VW, VH)
+        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing |
+                            QPainter.RenderHint.SmoothPixmapTransform)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        s = min(self.viewport().width() / VW, self.viewport().height() / VH)
+        self.setTransform(QTransform.fromScale(s, s))
+        self.centerOn(VW / 2, VH / 2)
+
+    def wheelEvent(self, e):
+        # route wheel to embedded widgets only; never scroll the view itself
+        item = self.itemAt(e.position().toPoint())
+        if item is not None:
+            super().wheelEvent(e)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Financial Odyssey: 18 to 65")
+        self.ui = GameUI()
+        self.ui.popup.on_close = self._popup_closed
+        self.view = ScaledView(self.ui)
+        self.setCentralWidget(self.view)
+        self.setStyleSheet("QMainWindow { background:#000; }")
+
+        # Initial size: 9:16 window filling ~92% of the screen height (or width if the
+        # screen is narrow). Same proportions on every monitor / phone / tablet.
+        scr = QGuiApplication.primaryScreen().availableGeometry()
+        h = int(scr.height() * 0.92)
+        w = int(h * VW / VH)
+        if w > scr.width() * 0.96:
+            w = int(scr.width() * 0.96)
+            h = int(w * VH / VW)
+        self.resize(w, h)
+        self.move(scr.x() + (scr.width() - w) // 2, scr.y() + (scr.height() - h) // 2)
+        self.setMinimumSize(270, 480)
+
+        QShortcut(QKeySequence("F11"), self, self.toggle_fullscreen)
+        QShortcut(QKeySequence("Esc"), self, lambda: self.showNormal() if self.isFullScreen() else None)
+
+    def _popup_closed(self):
+        self.ui.dash.refresh() if self.ui.game.state in ("main", "event") else None
+        self.ui._pump()
+
+    def toggle_fullscreen(self):
+        self.showNormal() if self.isFullScreen() else self.showFullScreen()
 
 
 def main():
-    clock = pygame.time.Clock()
-    game = LifeGame()
-    running = True
-    last_state = game.state
-    ignore_clicks_until = 0
-
-    while running:
-        mouse_pos = pygame.mouse.get_pos()
-        scale_x = VIRTUAL_WIDTH / WINDOW_WIDTH
-        scale_y = VIRTUAL_HEIGHT / WINDOW_HEIGHT
-        virtual_mouse = (int(mouse_pos[0] * scale_x), int(mouse_pos[1] * scale_y))
-
-        click = False
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:
-                    click = True
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-
-        if pygame.time.get_ticks() < ignore_clicks_until:
-            click = False
-
-        buttons = []
-        virtual_surface.fill(BG_COLOR)
-
-        if game.state == "card_prompt":
-            draw_card_prompt(virtual_surface, game, buttons, virtual_mouse)
-
-        elif game.state == "main":
-            draw_main_dashboard(virtual_surface, game, buttons, virtual_mouse)
-
-        elif game.state == "event":
-            draw_main_dashboard(virtual_surface, game, [], virtual_mouse)
-            draw_event_screen(virtual_surface, game, buttons, virtual_mouse)
-
-        elif game.state == "game_over":
-            draw_game_over_screen(virtual_surface, game, buttons, virtual_mouse)
-
-        for btn in buttons:
-            if click and btn.is_clicked(virtual_mouse, click):
-                if game.state == "card_prompt":
-                    if btn.text == "BEGIN YOUR JOURNEY":
-                        game.state = "main"
-                        game.add_log("Credit card application approved! Journey begins.", GREEN)
-
-                elif game.state == "main":
-                    act = getattr(btn, "action", None)
-                    if act == "next_quarter":
-                        game.next_turn()
-                    elif act == "buy_happiness":
-                        game.buy_happiness()
-                    elif act == "quick_withdraw":
-                        game.quick_withdraw(500)
-                    elif act == "get_loan":
-                        game.take_user_loan(1000)
-                    elif act == "quick_pay_debt":
-                        game.quick_pay_debt()
-                    elif act == "quick_invest":
-                        game.quick_invest()
-                    elif act == "early_retire":
-                        game.state = "game_over"
-                        game.death_reason = "EARLY_RETIREMENT"
-
-                elif game.state == "event":
-                    act = getattr(btn, "action", None)
-                    if act:
-                        game.handle_choice(act)
-
-                elif game.state == "game_over":
-                    if getattr(btn, "action", None) == "restart":
-                        game.reset()
-                        game.state = "main"
-                break
-
-        if game.state != last_state:
-            ignore_clicks_until = pygame.time.get_ticks() + CLICK_COOLDOWN_MS
-            last_state = game.state
-
-        window.fill(BLACK)
-        scaled_surface = pygame.transform.scale(virtual_surface, (WINDOW_WIDTH, WINDOW_HEIGHT))
-        window.blit(scaled_surface, (0, 0))
-        pygame.display.flip()
-        clock.tick(60)
-
-    pygame.quit()
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    app = QApplication(sys.argv)
+    app.setApplicationName("Financial Odyssey")
+    win = MainWindow()
+    win.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
