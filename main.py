@@ -50,9 +50,9 @@ class LifeGame:
     UTIL_BASE = 550                # compulsory transport & utilities
     NO_CAR_SAVING = 150            # transit is a bit cheaper than running a car
     PET_COST = 120
-    LIFESTYLE_CREEP = 0.30         # 30% of every raise is eaten by a pricier lifestyle
+    LIFESTYLE_CREEP = 0.45         # 45% of every raise is eaten by a pricier lifestyle
     INFLATION_QTR = 0.0075         # ~3% / year
-    RAISE_QTR = 0.006              # ~2.4% / year (slower than inflation!)
+    RAISE_QTR = 0.0055             # ~2.2% / year (slower than inflation!)
 
     HAPPY_COST = 900               # the ONE way to buy happiness on the dashboard
     HAPPY_PTS = 20
@@ -64,7 +64,7 @@ class LifeGame:
     OVER_LIMIT_FEE = 35
     COLLECTIONS_FEE = 0.15
     LOAN_ORIGINATION = 0.02
-    CARD_MIN_PCT = 0.10
+    CARD_MIN_PCT = 0.04            # small minimums: carried balances linger (and cost interest)
     LOAN_MIN_PCT = 0.08
     MIN_PAYMENT_FLOOR = 50
     LOAN_MIN_SCORE = 450
@@ -77,16 +77,21 @@ class LifeGame:
         (450, "Poor",      0.0350, 0.065,  3000,  6000),
         (0,   "Very Poor", 0.0475, 0.075,  1000,     0),
     ]
+    # Landlords, utilities and insurers price by credit: multiplier on rent + transport & bills
+    CREDIT_PRICING = {"Excellent": 0.92, "Good": 0.96, "Fair": 1.00, "Poor": 1.08, "Very Poor": 1.16}
+    CREDIT_BANDS = (800, 700, 600, 450, 300)   # crossing below one of these triggers the warning popup
     HISTORY_CAP_TURNS = 20         # 5 years of history ...
     HISTORY_CAP = 700              # ... before you can pass 700
+    REBUILD_SCORE = 450            # below this, on-time payments rebuild faster (+10)
     IRS_SCORE = 300
-    IRS_TURNS = 8
+    IRS_TURNS = 8                  # strikes = quarters under 300 while STILL missing/late on payments
     DEPRESSION_TURNS = 4
+    HAPPY_RECOVER = 25             # depression strikes only fade once happiness is back to 25+
 
     # ---- Investing ----------------------------------------------------------
-    INVEST_RANGE = (-0.035, 0.075)
-    CRASH_CHANCE = 1 / 48
-    CRASH_RANGE = (0.15, 0.35)
+    INVEST_RANGE = (-0.02, 0.045)  # calmer quarters: skill, not market luck, should decide the score
+    CRASH_CHANCE = 1 / 80
+    CRASH_RANGE = (0.10, 0.22)
     EARLY_WITHDRAW_PENALTY = 0.05
     PENALTY_FREE_AGE = 60
 
@@ -128,8 +133,8 @@ class LifeGame:
           "How often you check your score"],
          "Payment history is king. In this game your score only rises when you pay what is due, "
          "and only falls when you don't. Cash balance and checking your score don't affect it."),
-        ("Your statement shows: balance $2,000, minimum due $200. What protects your score?",
-         ["Pay at least $200 now — ideally all $2,000 to avoid interest",
+        ("Your statement shows: balance $2,000, minimum due $80. What protects your score?",
+         ["Pay at least $80 now — ideally all $2,000 to avoid interest",
           "Pay nothing until next quarter",
           "Pay $50, any amount counts"],
          "Paying the minimum keeps the payment on time. Paying less than the minimum still counts as a "
@@ -201,6 +206,7 @@ class LifeGame:
         self.happiness = 100
         self.low_credit_turns = 0
         self.zero_happiness_turns = 0
+        self.delinquent = False          # a payment was late/missed since the last IRS check
 
         self.min_due = 0
         self.paid_this_qtr = 0
@@ -302,8 +308,15 @@ class LifeGame:
     def card_rate(self):
         return self.tier()[3]
 
+    def limit_for(self, tier):
+        # card limits grow with your pay, so a carried balance can get genuinely large
+        return int((tier[4] + self.limit_bonus) * self.wage_index)
+
     def card_limit(self):
-        return self.tier()[4] + self.limit_bonus
+        return self.limit_for(self.tier())
+
+    def credit_price_factor(self):
+        return self.CREDIT_PRICING[self.tier()[1]]
 
     def card_available(self):
         return max(0, self.card_limit() - self.card)
@@ -334,11 +347,12 @@ class LifeGame:
         return int(self.potential_income() * mult)
 
     def essentials_breakdown(self):
-        items = [
-            ("Rent", self.price(self.RENT_BASE + self.rent_adj)),
-            ("Groceries", self.price(self.FOOD_BASE)),
-            ("Transport & bills", self.price(self.UTIL_BASE - (0 if self.has_car else self.NO_CAR_SAVING))),
-        ]
+        rent = self.price(self.RENT_BASE + self.rent_adj)
+        bills = self.price(self.UTIL_BASE - (0 if self.has_car else self.NO_CAR_SAVING))
+        items = [("Rent", rent), ("Groceries", self.price(self.FOOD_BASE)), ("Transport & bills", bills)]
+        adj = int(round((rent + bills) * (self.credit_price_factor() - 1)))
+        if adj:
+            items.append(("Credit discount" if adj < 0 else "Credit premium", adj))
         if self.has_pet:
             items.append(("Pet care", self.price(self.PET_COST)))
         creep = int(self.LIFESTYLE_CREEP * max(0, self.potential_income() - self.wage(self.START_INCOME)))
@@ -378,10 +392,12 @@ class LifeGame:
             delta = -50
             self.streak = 0
             self.stats["missed"] += 1
+            self.delinquent = True
         elif status == "late":
             delta = -20
             self.streak = 0
             self.stats["late"] += 1
+            self.delinquent = True
         else:  # on_time
             self.streak += 1
             self.best_streak = max(self.best_streak, self.streak)
@@ -390,6 +406,8 @@ class LifeGame:
                 delta = self.rng.choice([0, 1])            # very high score: +0 / +1
             elif before >= 700:
                 delta = 2                                  # established: +2
+            elif before < self.REBUILD_SCORE:
+                delta = 10                                 # rebuilding from a damaged score: +10
             else:
                 delta = 5 + (2 if self.streak >= 4 else 0)  # building: +5, +2 streak bonus
         new = max(0, min(1000, before + delta))
@@ -421,9 +439,18 @@ class LifeGame:
             self.toasts.append((f"Credit tier up: {t_after[1]}! Card limit {money(self.card_limit())}, "
                                 f"loan rate {t_after[2]:.2%}/qtr", "good"))
 
+    @classmethod
+    def band_of(cls, score):
+        return sum(score >= b for b in cls.CREDIT_BANDS)
+
     def _credit_drop_popup(self, before):
         after = self.credit_score
         if after >= before:
+            return
+        if self.band_of(after) >= self.band_of(before):
+            # still in the same band: a quick heads-up instead of the full explainer
+            self.toasts.append((f"Credit score {after - before:+d} → {after}. Pay the minimum every quarter "
+                                f"to rebuild it.", "bad"))
             return
         drops = [r for r in self.credit_reasons if r[0] < 0]
         tb, ta = self.tier_for(before), self.tier()
@@ -433,12 +460,14 @@ class LifeGame:
         if ta[0] < tb[0]:
             tier_html = (f"<p style='color:#FBBF24'><b>Tier dropped: {tb[1]} → {ta[1]}.</b> "
                          f"Loan rate {tb[2]:.2%} → {ta[2]:.2%}/qtr, card rate {tb[3]:.2%} → {ta[3]:.2%}/qtr, "
-                         f"card limit {money(tb[4] + self.limit_bonus)} → {money(ta[4] + self.limit_bonus)}.</p>")
+                         f"card limit {money(self.limit_for(tb))} → {money(self.limit_for(ta))}, rent & bills "
+                         f"{(self.CREDIT_PRICING[tb[1]] - 1) * 100:+.0f}% → {(self.CREDIT_PRICING[ta[1]] - 1) * 100:+.0f}%.</p>")
         extra = int(10000 * (ta[2] - best[2]))
         irs = ""
         if self.credit_score < self.IRS_SCORE:
-            irs = (f" <b style='color:#F87171'>You are below 300 right now — still under 300 at the end of "
-                   f"next quarter means strike {self.low_credit_turns + 1}/{self.IRS_TURNS}.</b>")
+            irs = (f" <b style='color:#F87171'>You are below 300 now. Every quarter you're under 300 AND miss a "
+                   f"payment is a strike ({self.low_credit_turns}/{self.IRS_TURNS} so far). Pay on time and "
+                   f"strikes stop — you can always recover.</b>")
         body = (
             f"<p>Your score fell from <b>{before}</b> to <b style='color:#F87171'>{after}</b> "
             f"({after - before:+d}).</p>"
@@ -449,19 +478,23 @@ class LifeGame:
             f"<li><b>Smaller card limit</b> ({money(self.card_limit())}) — less room for emergencies, "
             "so surprise bills spill into overdraft or collections.</li>"
             "<li><b>Loans denied</b> below a 450 score.</li>"
-            f"<li><b>IRS seizure</b> if your score stays under 300 for 8 quarters — game over.{irs}</li>"
+            f"<li><b>Pricier life:</b> landlords and insurers charge you "
+            f"{(self.CREDIT_PRICING[ta[1]] - 1) * 100:+.0f}% on rent & bills at this tier "
+            f"({(self.CREDIT_PRICING['Excellent'] - 1) * 100:+.0f}% at Excellent).</li>"
+            f"<li><b>IRS seizure</b> after 8 quarters under 300 while still missing payments — game over.{irs}</li>"
             "<li><b>Lower final score</b> — your retirement multiplier is 0.5 + score/2000.</li></ul>"
             "<p><b style='color:#4ADE80'>How to rebuild it</b></p><ul>"
             "<li>Pay at least the <b>minimum due</b> shown on the dashboard every quarter <i>before</i> "
-            "pressing Advance: +5 per on-time payment, +2 bonus once you're on a 4-quarter streak.</li>"
+            "pressing Advance: +10 per on-time payment while rebuilding (under 450), otherwise +5 "
+            "(+2 bonus on a 4-quarter streak).</li>"
             "<li>Paying something but less than the minimum is still <b>late (-20)</b>; paying nothing is "
             "<b>missed (-50)</b>.</li>"
             "<li>Keep an emergency cash cushion so surprise bills never go to collections (-50).</li>"
             "<li>Using your card is fine — <b>only unpaid debt lowers your score</b>. Charging and paying on "
             "time is how you climb.</li></ul>"
         )
-        self.popups.append({"title": "Your credit score dropped", "body": body,
-                            "kind": "warning", "guide": True})
+        self.popups.append({"title": f"Your credit fell to {ta[1]}" if ta[0] < tb[0] else
+                            "Your credit is in the danger zone", "body": body, "kind": "warning", "guide": True})
 
     # --------------------------------------------------------- money moves --
     def _note_debt(self):
@@ -727,18 +760,28 @@ class LifeGame:
                 self.end_reason = "DEPRESSION"
                 return
             self.add_log(f"Happiness is 0! Depression warning {self.zero_happiness_turns}/{self.DEPRESSION_TURNS}", "bad")
-        else:
-            self.zero_happiness_turns = 0
+        elif self.happiness >= self.HAPPY_RECOVER:
+            if self.zero_happiness_turns:
+                self.zero_happiness_turns -= 1          # recovery is gradual, one quarter at a time
+                self.add_log(f"Recovering from burnout ({self.zero_happiness_turns}/{self.DEPRESSION_TURNS} warnings left)", "good")
+        elif self.zero_happiness_turns:
+            self.add_log(f"Still burnt out — happiness must reach {self.HAPPY_RECOVER} to recover "
+                         f"({self.zero_happiness_turns}/{self.DEPRESSION_TURNS})", "warn")
 
         if self.credit_score < self.IRS_SCORE:
-            self.low_credit_turns += 1
-            if self.low_credit_turns >= self.IRS_TURNS:
-                self.state = "game_over"
-                self.end_reason = "IRS_SEIZURE"
-                return
-            self.add_log(f"Credit under 300! IRS strike {self.low_credit_turns}/{self.IRS_TURNS}", "bad")
+            if self.delinquent:
+                self.low_credit_turns += 1
+                if self.low_credit_turns >= self.IRS_TURNS:
+                    self.state = "game_over"
+                    self.end_reason = "IRS_SEIZURE"
+                    return
+                self.add_log(f"Under 300 and still missing payments: IRS strike {self.low_credit_turns}/{self.IRS_TURNS}", "bad")
+            elif self.low_credit_turns:
+                self.low_credit_turns -= 1
+                self.add_log(f"Paying on time — IRS strikes falling ({self.low_credit_turns}/{self.IRS_TURNS})", "good")
         else:
             self.low_credit_turns = 0
+        self.delinquent = False
 
         self._credit_drop_popup(start_score)
         self._trigger_event()
@@ -1232,16 +1275,19 @@ class LifeGame:
     def credit_guide_html(self):
         rows = "".join(
             f"<tr><td><b>{n}</b></td><td>{s}+</td><td>{lr:.2%}</td><td>{cr:.2%}</td>"
-            f"<td>{money(lim)}</td><td>{money(cap) if cap else 'Denied'}</td></tr>"
+            f"<td>{money(self.limit_for((s, n, lr, cr, lim, cap)))}</td><td>{money(cap) if cap else 'Denied'}</td>"
+            f"<td>{(self.CREDIT_PRICING[n] - 1) * 100:+.0f}%</td></tr>"
             for s, n, lr, cr, lim, cap in self.TIERS)
         return (
             "<p>Your <b>credit score</b> (0 - 1000) is how much lenders trust you. You start at <b>550</b> "
             "with a brand-new credit card.</p>"
             "<p><b style='color:#FACC15'>How the score moves</b> — it only changes when a bill is due:</p><ul>"
             "<li>Each quarter your card and loans post a <b>statement</b> with a <b>minimum payment due</b> "
-            "(10% of the card balance, 8% of loans). It's shown on the dashboard.</li>"
+            "(4% of the card balance, 8% of loans). It's shown on the dashboard. A small minimum keeps "
+            "your score safe — but whatever you don't pay keeps collecting interest.</li>"
             "<li><b style='color:#4ADE80'>On time</b> (paid at least the minimum before advancing): "
-            "+5 while building (under 700), +2 bonus on a 4+ quarter streak; +2 from 700-799; +0 or +1 at 800+.</li>"
+            "+10 while rebuilding (under 450); +5 from 450-699 (+2 bonus on a 4+ quarter streak); "
+            "+2 from 700-799; +0 or +1 at 800+.</li>"
             "<li><b style='color:#FBBF24'>Late</b> (paid something, but less than the minimum): -20.</li>"
             "<li><b style='color:#F87171'>Missed</b> (paid nothing) or a bill sent to collections: -50.</li>"
             "<li>Swiping your card or carrying a balance does <b>not</b> lower your score — only unpaid "
@@ -1249,10 +1295,14 @@ class LifeGame:
             "<li><b>History cap:</b> you can't pass 700 until you have 5 years (20 quarters) of history.</li></ul>"
             "<p><b style='color:#FACC15'>What your tier gets you</b> (rates are per quarter):</p>"
             "<table cellspacing='0' cellpadding='6' width='100%'>"
-            "<tr style='color:#8A97B1'><td>Tier</td><td>Score</td><td>Loan</td><td>Card</td><td>Card limit</td><td>Max loans</td></tr>"
+            "<tr style='color:#8A97B1'><td>Tier</td><td>Score</td><td>Loan</td><td>Card</td><td>Card limit</td>"
+            "<td>Max loans</td><td>Rent & bills</td></tr>"
             f"{rows}</table>"
             "<p><b style='color:#FACC15'>Limits, interest & fees</b></p><ul>"
-            "<li><b>Card limit:</b> purchases that would go over your limit are declined.</li>"
+            "<li><b>Card limit:</b> purchases that would go over your limit are declined. Limits grow as your "
+            "pay rises — so does the damage a carried balance can do.</li>"
+            "<li><b>Credit-based pricing:</b> landlords, utilities and insurers check your score. Rent and bills "
+            "cost 8% less at Excellent and up to 16% more at Very Poor — even if you never borrow a cent.</li>"
             "<li><b>Grace period:</b> pay the full statement balance and you pay no card interest that quarter.</li>"
             f"<li><b>Overdraft:</b> if essentials exceed your cash, your bank balance can go down to "
             f"-{money(self.OVERDRAFT_LIMIT)} ({money(self.OVERDRAFT_FEE)} fee + 5% interest per quarter). "
@@ -1261,7 +1311,8 @@ class LifeGame:
             "<li><b>Bank loans</b> are cheaper than cards but need a 450+ score; a 2% fee is added up front.</li>"
             "<li>Payments always go to the highest-interest balance (your card) first.</li></ul>"
             "<p><b style='color:#F87171'>Danger zone</b></p><ul>"
-            "<li>Below 450: no loans. Below 300 for 8 straight quarters: the IRS seizes your assets (game over).</li>"
+            "<li>Below 450: no loans. Under 300 AND still missing payments for 8 quarters: the IRS seizes your "
+            "assets (game over). Pay on time and the strikes count back down — recovery is always possible.</li>"
             "<li>At retirement your net worth is multiplied by 0.5 + score/2000 — a 900 score is worth 30% more "
             "than a 300 score.</li></ul>"
             "<p><b style='color:#4ADE80'>Pro tip:</b> turn on <i>Charge essentials to card</i>, then pay the "
@@ -2239,7 +2290,7 @@ TIPS = {
     "pay_all": ("Debt cleared", "Paying the whole statement means no card interest this quarter (grace period) — the "
                 "smartest way to use a credit card."),
     "buy": ("Happiness refilled", "Leisure costs real money, so budget for it every quarter. Remember: 0 happiness for "
-            "a full year is game over."),
+            "the start of burnout — 4 warnings and it's game over."),
     "autopay": ("Essentials on your card", "Rent, food and bills will now be charged to your card each quarter. Pay the "
                 "statement before advancing and your credit score climbs."),
     "advance": ("A quarter passed", "You were paid, compulsory essentials were taken and a life event appeared. "
@@ -2274,8 +2325,9 @@ class Tutorial:
                  body="You start at <b>550</b>. It only rises when you pay bills on time, and drops when you "
                       "don't. Higher scores mean cheaper loans and bigger card limits."),
             dict(title="Happiness", target=lambda: d().happy_box,
-                 body="Work and life stress drain happiness every quarter. If it sits at <b>0 for a full year</b>, "
-                      "you die of depression. The pink button refills it."),
+                 body="Work and life stress drain happiness every quarter. Each quarter at <b>0</b> is a burnout "
+                      "warning — 4 and you die of depression. Warnings only fade once you're back above "
+                      "<b>25</b>. The pink button refills it."),
             dict(title="Your money", target=lambda: d().tiles_box,
                  body="Cash, investments, credit card and loan balances, your pay, and your <b>compulsory</b> "
                       "rent, food & bills. These tiles are information only."),
@@ -2294,10 +2346,11 @@ class Tutorial:
             dict(title="Your first statement", target=lambda: d().bills, skip=lambda: g().min_due <= 0,
                  body="You used your card, so a <b>minimum payment</b> is now due. Pay at least this much "
                       "<b>before</b> advancing: on time = credit up, late = −20, missed = −50."),
-            dict(title="Pay your bill", target=lambda: d().b_min, wait=("pay_min", "pay_all", "pay"),
+            dict(title="Pay your bill", target=lambda: d().b_all, wait=("pay_all", "pay_min", "pay"),
                  skip=lambda: g().remaining_due() <= 0 or g().cash <= 0,
-                 body="<b>Pay minimum</b> protects your score. <b>Pay off all</b> clears the card and avoids "
-                      "interest entirely.", hint="Try it: press Pay minimum (or Pay off all)."),
+                 body="<b>Pay off all</b> clears the card: your score goes up <i>and</i> you pay zero interest. "
+                      "<b>Pay minimum</b> only protects your score — the rest of the balance keeps "
+                      "collecting interest.", hint="Try it: press Pay off all."),
             dict(title="Activity log", target=lambda: d().log_box,
                  body="Every paycheck, bill, interest charge and decision is recorded here, newest first."),
             dict(title="Choose an amount", target=lambda: d().amount_box, on_show=lambda: d().amount.setValue(500),
@@ -2492,8 +2545,9 @@ class StartPage(QWidget):
         rl.addWidget(label("How it works", 34, W_BOLD))
         for head, text in [
             ("Bills come due.", "Card and loan balances post a minimum payment. Pay it before advancing to grow your credit."),
-            ("Happiness drains.", "Buy leisure to refill it. At 0 for a full year you die of depression."),
-            ("Credit = cheaper money.", "Higher scores unlock lower interest, bigger limits and loans (capped at 700 for 5 years)."),
+            ("Happiness drains.", "Buy leisure to refill it. Each quarter at 0 is a burnout warning; 4 and you die of "
+             "depression. Warnings only fade once happiness is back above 25."),
+            ("Credit = cheaper life.", "Higher scores mean lower interest, bigger limits — even cheaper rent (capped at 700 for 5 years)."),
             ("Costs rise faster than pay.", "Rent, groceries and bills are compulsory, so certifications and investing matter."),
             ("$1,000,000 net worth", "lets you retire early. Otherwise you retire at 65."),
         ]:
@@ -3013,7 +3067,7 @@ class Dashboard(QWidget):
         if g.streak:
             notes.append(f"On-time streak {g.streak}")
         if danger:
-            notes.append(f"IRS SEIZURE RISK {g.low_credit_turns}/{g.IRS_TURNS}")
+            notes.append(f"IRS RISK {g.low_credit_turns}/{g.IRS_TURNS}: pay on time to clear it")
         self.credit_note.setText("  ·  ".join(notes) if notes else "Pay your minimum each quarter to climb")
         set_color(self.credit_note, T["red"] if danger else T["muted"])
 
@@ -3023,11 +3077,11 @@ class Dashboard(QWidget):
         self.happy_bar.set_value(g.happiness / 100, hcol)
         self.decay_badge.setText(f"−{g.happiness_decay()} / QTR")
         if g.zero_happiness_turns:
-            self.happy_note.setText(f"DEPRESSION WARNING {g.zero_happiness_turns}/{g.DEPRESSION_TURNS} — "
-                                    "buy leisure now or you won't survive the year!")
+            self.happy_note.setText(f"BURNOUT WARNING {g.zero_happiness_turns}/{g.DEPRESSION_TURNS} — get happiness "
+                                    f"above {g.HAPPY_RECOVER} to recover, 4 warnings is fatal.")
             set_color(self.happy_note, T["red"])
         else:
-            self.happy_note.setText("Work & life stress drain it every quarter. Zero for a full year is fatal.")
+            self.happy_note.setText("Work & life stress drain it every quarter. 4 quarters at zero is fatal.")
             set_color(self.happy_note, T["muted"])
         cost = g.happiness_cost()
         self.buy_btn.setText(f"Buy leisure & hobbies\n−{money(cost)}  ·  +{g.HAPPY_PTS} happiness")
@@ -3054,7 +3108,11 @@ class Dashboard(QWidget):
             inc_sub += "  ·  no car −10%"
         self.t_inc.set(money(g.quarterly_income()), T["gold"], inc_sub, T["amber"] if g.layoff_turns else None)
         items = g.essentials_breakdown()
-        self.t_ess.set(money(g.essentials_total()), T["pink"], "Rent, food & bills — compulsory")
+        adj = dict(items).get("Credit premium", 0) or dict(items).get("Credit discount", 0)
+        self.t_ess.set(money(g.essentials_total()), T["pink"],
+                       (f"Incl. credit {'premium +' if adj > 0 else 'discount −'}{money(abs(adj))}" if adj
+                        else "Rent, food & bills — compulsory"),
+                       T["red"] if adj > 0 else (T["green"] if adj < 0 else None))
         self.t_ess.setToolTip("\n".join(f"{n}: {money(v)}" for n, v in items))
 
         rem = g.remaining_due()
@@ -3213,12 +3271,12 @@ class GameOverPage(QWidget):
             self.title.setText("<span style='font-weight:300'>Assets </span><b>seized.</b>")
             self.badge.setText("GAME OVER")
             self.badge.set_tint("red")
-            self.sub.setText("Your credit score stayed under 300 for two years and the IRS took everything.")
+            self.sub.setText("You kept missing payments with a credit score under 300, and the IRS took everything.")
         else:
             self.title.setText("<span style='font-weight:300'>Lost to </span><b>depression.</b>")
             self.badge.setText("GAME OVER")
             self.badge.set_tint("red")
-            self.sub.setText("Your happiness stayed at 0 for a full year. Money matters — but so does living.")
+            self.sub.setText("Four quarters of burnout at zero happiness. Money matters — but so does living.")
         nw = g.get_net_worth()
         mult = f"×{0.5 + g.credit_score / 2000:.2f} credit multiplier" if good else f"−{money(g.DEATH_PENALTY)} penalty"
         data = [
