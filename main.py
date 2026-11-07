@@ -54,17 +54,17 @@ ACCENT = (255, 215, 0)
 
 # Fonts
 try:
-    FONT_TITLE = pygame.font.SysFont("arial", 64, bold=True)
-    FONT_HEADER = pygame.font.SysFont("arial", 46, bold=True)
-    FONT_MEDIUM = pygame.font.SysFont("arial", 34, bold=True)
-    FONT_REGULAR = pygame.font.SysFont("arial", 26)
-    FONT_SMALL = pygame.font.SysFont("arial", 20)
+    FONT_TITLE = pygame.font.SysFont("arial", 60, bold=True)
+    FONT_HEADER = pygame.font.SysFont("arial", 42, bold=True)
+    FONT_MEDIUM = pygame.font.SysFont("arial", 32, bold=True)
+    FONT_REGULAR = pygame.font.SysFont("arial", 24)
+    FONT_SMALL = pygame.font.SysFont("arial", 19)
 except:
-    FONT_TITLE = pygame.font.Font(None, 64)
-    FONT_HEADER = pygame.font.Font(None, 46)
-    FONT_MEDIUM = pygame.font.Font(None, 34)
-    FONT_REGULAR = pygame.font.Font(None, 26)
-    FONT_SMALL = pygame.font.Font(None, 20)
+    FONT_TITLE = pygame.font.Font(None, 60)
+    FONT_HEADER = pygame.font.Font(None, 42)
+    FONT_MEDIUM = pygame.font.Font(None, 32)
+    FONT_REGULAR = pygame.font.Font(None, 24)
+    FONT_SMALL = pygame.font.Font(None, 19)
 
 CLICK_COOLDOWN_MS = 200
 
@@ -88,15 +88,14 @@ class Button:
         shadow_rect.y += 4
         pygame.draw.rect(surface, (0, 0, 0, 150), shadow_rect, border_radius=16)
         pygame.draw.rect(surface, draw_color, self.rect, border_radius=16)
-        pygame.draw.rect(surface, WHITE if self.hovered and self.enabled else draw_color, self.rect, 3,
-                         border_radius=16)
+        pygame.draw.rect(surface, WHITE if self.hovered and self.enabled else draw_color, self.rect, 3, border_radius=16)
 
         words = self.text.split()
         lines = []
         curr_line = ""
         for w in words:
             test = curr_line + (" " if curr_line else "") + w
-            if self.font.size(test)[0] < self.rect.width - 30:
+            if self.font.size(test)[0] < self.rect.width - 25:
                 curr_line = test
             else:
                 lines.append(curr_line)
@@ -120,29 +119,28 @@ class Button:
 
 
 class LifeGame:
-    START_INCOME = 3200  # Stricter quarterly income
-    GROCERY_BASE = 1500  # Compulsory quarterly groceries
-    HEALTH_BUY_COST = 1200  # Single option for health ($1200 for +30 Health)
-    HEALTH_BUY_HP = 30
-    INFLATION_QTR = 0.008  # High price inflation forcing tight money
-    RAISE_QTR = 0.003  # Slow income growth
+    START_INCOME = 3500            # Quarterly income
+    GROCERY_BASE = 1400           # Compulsory quarterly expenses
+    HAPPINESS_BUY_COST = 800       # Option to boost happiness ($800 for +30 Happiness)
+    HAPPINESS_BUY_PTS = 30
+    INFLATION_QTR = 0.007          # Quarterly inflation
+    RAISE_QTR = 0.003              # Slow income growth
+    
+    CREDIT_CARD_LIMIT = 3000       # Initial credit limit
+    OVERDRAFT_LIMIT = 1000         # Bank overdraft limit
 
-    CREDIT_CARD_LIMIT = 3000  # Initial credit limit
-    OVERDRAFT_LIMIT = 1000  # Bank overdraft limit
-
-    INVEST_RANGE = (-0.06, 0.08)
+    INVEST_RANGE = (-0.05, 0.08)
     CRASH_CHANCE = 1 / 25
-    CRASH_RANGE = (0.25, 0.45)
-    EARLY_WITHDRAW_PENALTY = 0.15
-    PENALTY_FREE_AGE = 60
+    CRASH_RANGE = (0.20, 0.40)
+    EARLY_WITHDRAW_PENALTY = 0.05
 
     MAX_COURSES = 5
-    COURSE_BASE_COST = 1500
+    COURSE_BASE_COST = 1400
     COURSE_BASE_BONUS = 600
 
     DEATH_PENALTY = 100_000
 
-    EVENT_DECK = (["medical"] * 3 + ["market"] * 2 + ["car"] * 2 + ["vacation"] * 2 +
+    EVENT_DECK = (["leisure"] * 3 + ["market"] * 2 + ["car"] * 2 + ["vacation"] * 2 +
                   ["course"] * 2 + ["debt"] * 2 + ["credit_edu"] * 3 + ["layoff"] * 2)
 
     def __init__(self, seed=None):
@@ -155,18 +153,18 @@ class LifeGame:
         self.age_years = 18
         self.age_months = 0
         self.turns_played = 0
-        self.cash = 800
-        self.credit_score = 550  # Initial score
-        self.consecutive_on_time = 0  # Track consistent on-time payments
-
-        self.debt = 0  # Total borrowed debt
+        self.cash = 1000
+        self.credit_score = 550      # Initial score
+        self.consecutive_on_time = 0
+        
+        self.debt = 0                # Total borrowed debt
         self.investments = 0
-        self.health = 100
+        self.happiness = 100         # Changed from Health to Happiness!
 
         self.low_credit_turns = 0
-        self.zero_health_turns = 0
+        self.zero_happiness_turns = 0
 
-        self.state = "card_prompt"  # card_prompt, main, event, game_over
+        self.state = "card_prompt"   # card_prompt, main, event, game_over
         self.death_reason = ""
         self.log = []
         self.current_event = None
@@ -193,14 +191,12 @@ class LifeGame:
     def wage(self, amount):
         return int(round(amount * self.wage_index))
 
-    def health_multiplier(self):
-        return 0.5 + 0.5 * (self.health / 100)
-
     def potential_income(self):
         return int(self.base_income * self.wage_index)
 
     def quarterly_income(self):
-        mult = self.health_multiplier() * self.layoff_mult
+        # NO income penalty for low happiness! Income is purely based on salary & car status.
+        mult = self.layoff_mult
         if not self.has_car:
             mult *= 0.90
         return int(self.potential_income() * mult)
@@ -208,23 +204,31 @@ class LifeGame:
     def compulsory_groceries(self):
         return self.price(self.GROCERY_BASE)
 
-    def health_cost(self):
-        return self.price(self.HEALTH_BUY_COST)
+    def happiness_cost(self):
+        return self.price(self.HAPPINESS_BUY_COST)
 
-    def health_decay(self):
-        return 18 + (12 * (self.age_years - 18)) // 47
+    def happiness_decay(self):
+        # Work stress & life wear decay quarterly happiness
+        return 15 + (10 * (self.age_years - 18)) // 47
 
     def interest_rate(self):
+        """
+        Adjusted quarterly interest rates (converted from annual rates for 3-month turns):
+        - Excellent (800+): 0.75% / qtr (~3.0% APR)
+        - Good (650-799): 1.25% / qtr (~5.0% APR)
+        - Fair (500-649): 2.00% / qtr (~8.0% APR)
+        - Poor (<500): 3.25% / qtr (~13.0% APR)
+        """
         if self.credit_score >= 800:
-            return 0.03
+            return 0.0075
         if self.credit_score >= 650:
-            return 0.05
+            return 0.0125
         if self.credit_score >= 500:
-            return 0.075
-        return 0.10
+            return 0.0200
+        return 0.0325
 
     def withdraw_penalty_rate(self):
-        return 0.0 if self.age_years >= self.PENALTY_FREE_AGE else self.EARLY_WITHDRAW_PENALTY
+        return self.EARLY_WITHDRAW_PENALTY
 
     def final_score(self):
         nw = self.get_net_worth()
@@ -239,16 +243,6 @@ class LifeGame:
             self.log.pop(0)
 
     def update_credit_on_payment(self, status):
-        """
-        Improved credit score rules:
-        - 5 years history threshold (20 turns): can't exceed 700 before 20 turns.
-        - Missing payment: -50 pts
-        - Late payment: -20 pts
-        - On-time payment: +5 pts initially
-        - Consistently on-time: +2 pts per payment after streak
-        - Very high score (>=750): +0 or +1 pt max per payment
-        - Credit score capped strictly at 1000.
-        """
         if status == "missing":
             delta = -50
             self.consecutive_on_time = 0
@@ -267,22 +261,21 @@ class LifeGame:
             delta = 0
 
         self.credit_score = max(0, self.credit_score + delta)
-
-        # Credit history cap rule: Can't pass 700 until 5 years of history (20 quarters/turns)
+        
+        # Credit history cap rule: Can't pass 700 until 5 years of history (20 turns)
         if self.turns_played < 20 and self.credit_score > 700:
             self.credit_score = 700
-
+            
         self.credit_score = min(1000, self.credit_score)
 
     def take_user_loan(self, amount):
-        """Allows player to explicitly request a loan."""
         if self.credit_score < 400:
             self.add_log("Loan denied! Credit score below 400.", RED)
             return False
         fee = math.ceil(amount * self.interest_rate())
         self.debt += amount + fee
         self.cash += amount
-        self.add_log(f"Took out ${amount:,} bank loan (+${fee:,} fee). Debt +${amount + fee:,}", YELLOW)
+        self.add_log(f"Took out ${amount:,} bank loan (+${fee:,} fee). Debt +${amount+fee:,}", YELLOW)
         return True
 
     def repay(self, amount):
@@ -294,16 +287,16 @@ class LifeGame:
         self.update_credit_on_payment("on_time")
         return pay
 
-    def can_buy_health(self):
-        return self.cash >= self.health_cost()
+    def can_buy_happiness(self):
+        return self.cash >= self.happiness_cost()
 
-    def buy_health(self):
-        if not self.can_buy_health():
+    def buy_happiness(self):
+        if not self.can_buy_happiness():
             return False
-        cost = self.health_cost()
+        cost = self.happiness_cost()
         self.cash -= cost
-        self.health = min(100, self.health + self.HEALTH_BUY_HP)
-        self.add_log(f"Purchased healthcare & wellness (-${cost:,}, Health +{self.HEALTH_BUY_HP})", GREEN)
+        self.happiness = min(100, self.happiness + self.HAPPINESS_BUY_PTS)
+        self.add_log(f"Purchased leisure & hobbies (-${cost:,}, Happiness +{self.HAPPINESS_BUY_PTS})", GREEN)
         return True
 
     def can_pay_debt(self):
@@ -324,7 +317,7 @@ class LifeGame:
             return False
         self.cash -= 500
         self.investments += 500
-        self.add_log("Invested $500 into Index Funds", BLUE)
+        self.add_log("Invested $500 into Stock Market", BLUE)
         return True
 
     def can_withdraw(self):
@@ -336,11 +329,11 @@ class LifeGame:
         amt = min(amount, self.investments)
         penalty = int(amt * self.withdraw_penalty_rate())
         self.investments -= amt
-        self.cash += amt - penalty
-        if penalty:
-            self.add_log(f"Withdrew ${amt:,} (early fee -${penalty:,})", ORANGE)
+        self.cash += (amt - penalty)
+        if penalty > 0:
+            self.add_log(f"Retrieved ${amt-penalty:,} from investments (fee: -${penalty:,})", ORANGE)
         else:
-            self.add_log(f"Withdrew ${amt:,} from investments", BLUE)
+            self.add_log(f"Retrieved ${amt:,} from investments", BLUE)
         return True
 
     def next_turn(self):
@@ -356,7 +349,7 @@ class LifeGame:
             self.death_reason = "RETIREMENT"
             return
 
-        # Check Early Retirement Option if $1 Million reached
+        # Early Retirement Option if $1 Million net worth reached
         if self.get_net_worth() >= 1_000_000 and not self.early_retire_offered:
             self.early_retire_offered = True
 
@@ -374,29 +367,27 @@ class LifeGame:
 
         self.cash += earned
 
-        # Compulsory Groceries (Strict financial drain)
+        # Compulsory Groceries & Essentials
         grocery = self.compulsory_groceries()
         if self.cash >= grocery:
             self.cash -= grocery
-            self.add_log(f"Paid compulsory groceries (-${grocery:,})", WHITE)
+            self.add_log(f"Paid compulsory living costs (-${grocery:,})", WHITE)
         else:
-            # Overdraft / Credit card fallback
             shortfall = grocery - self.cash
             self.cash = 0
             self.debt += shortfall
-            self.add_log(f"Overdraft/Credit used for groceries (+${shortfall:,} debt)", RED)
+            self.add_log(f"Overdraft/Credit used for essentials (+${shortfall:,} debt)", RED)
 
-        # Health decay
-        self.health = max(0, self.health - self.health_decay())
+        # Passive Happiness decay
+        self.happiness = max(0, self.happiness - self.happiness_decay())
 
         # Interest on debt & missed payment handling
         if self.debt > 0:
             rate = self.interest_rate()
             interest = math.ceil(self.debt * rate)
             self.debt += interest
-            self.add_log(f"Debt interest +${interest:,} ({rate:.1%})", RED)
-
-            # If debt exceeds credit limit + overdraft ($4,000 baseline), missing payment triggers penalty
+            self.add_log(f"Quarterly Interest +${interest:,} ({rate:.2%}/qtr)", RED)
+            
             if self.debt > self.CREDIT_CARD_LIMIT + self.OVERDRAFT_LIMIT:
                 self.update_credit_on_payment("missing")
                 self.add_log("Over credit limit! Missed payment penalty (-50 Credit)", RED)
@@ -410,7 +401,7 @@ class LifeGame:
                 growth = -self.rng.uniform(*self.CRASH_RANGE)
                 change = int(self.investments * growth)
                 self.investments = max(0, self.investments + change)
-                self.add_log(f"MARKET CRASH! Investments lost ${abs(change):,}", RED)
+                self.add_log(f"MARKET CRASH! Investments dropped ${abs(change):,}", RED)
             else:
                 growth = self.rng.uniform(*self.INVEST_RANGE)
                 change = int(self.investments * growth)
@@ -420,15 +411,15 @@ class LifeGame:
                 else:
                     self.add_log(f"Investments dropped by -${abs(change):,}", RED)
 
-        # Check Health death condition
-        if self.health <= 0:
-            self.zero_health_turns += 1
-            if self.zero_health_turns >= 4:
+        # Happiness check: Dying of DEPRESSION if happiness remains 0 for 4 quarters (1 year)
+        if self.happiness <= 0:
+            self.zero_happiness_turns += 1
+            if self.zero_happiness_turns >= 4:
                 self.state = "game_over"
-                self.death_reason = "HEALTH_FAILURE"
+                self.death_reason = "DEPRESSION"
                 return
         else:
-            self.zero_health_turns = max(0, self.zero_health_turns - 1)
+            self.zero_happiness_turns = max(0, self.zero_happiness_turns - 1)
 
         # IRS Credit death condition (< 299 for 2 years / 8 turns)
         if self.credit_score < 299:
@@ -453,36 +444,33 @@ class LifeGame:
             if key == "course" and self.courses_taken >= self.MAX_COURSES:
                 continue
             return key
-        return "medical"
+        return "leisure"
 
     def build_event(self, key):
         c = {}
         if key == "credit_edu":
             return c, {
                 "title": "Credit Score Workshop",
-                "desc": "A local financial workshop explains credit scoring rules:"
-
-                        "• Paying with a credit card does NOT hurt score; only unpaid debt causes penalties."
-
-                        "• Missing a payment: -50 pts | Late payment: -20 pts."
-
-                        "• Score cannot cross 700 until 5 years of history.",
+                "desc": "A workshop explains credit rules:"
+                        "• High Score Benefits: Lower loan interest (~0.75%/qtr) & higher score bonus."
+                        "• Low Score Drawbacks: Higher interest (~3.25%/qtr), loan rejections, IRS seizure."
+                        "• How to Improve: Pay debt on time (+5 pts), maintain streaks (+2 pts), & avoid missing payments (-50 pts).",
                 "options": [
                     ("Attend Workshop (Gain +15 Credit)", "attend_edu"),
                     ("Skip Workshop", "pass")
                 ]
             }
-        if key == "medical":
-            c["med"] = self.price(700)
-            skip_hp = 25
+        if key == "leisure":
+            c["cost"] = self.price(500)
+            skip_hp = 20
             c["skip_hp"] = skip_hp
             return c, {
-                "title": "Medical Care",
-                "desc": "Unexpected medical treatment is needed.",
+                "title": "Weekend Getaway & Festival",
+                "desc": "Your friends are planning a music festival trip to recharge and relax.",
                 "options": [
-                    (f"Pay ${c['med']:,} Cash (Health +25)", "pay_med"),
-                    (f"Charge ${c['med']:,} to Credit Card (Health +25)", "debt_med"),
-                    (f"Skip treatment (-{skip_hp} Health)", "skip_med")
+                    (f"Pay ${c['cost']:,} Cash (Happiness +25)", "pay_leisure"),
+                    (f"Charge ${c['cost']:,} to Credit Card (Happiness +25)", "debt_leisure"),
+                    (f"Skip trip (-{skip_hp} Happiness)", "skip_leisure")
                 ]
             }
         if key == "market":
@@ -490,10 +478,10 @@ class LifeGame:
             c["invest_loan"] = self.price(1500)
             return c, {
                 "title": "Stock Market Opportunity",
-                "desc": "An index fund opportunity is available.",
+                "desc": "An index fund investment opportunity is available.",
                 "options": [
-                    (f"Invest ${c['invest']:,} in Cash", "invest_index"),
-                    (f"Take ${c['invest_loan']:,} Loan to Invest", "loan_invest"),
+                    (f"Invest ${c['invest']:,} Cash", "invest_index"),
+                    (f"Take ${c['invest_loan']:,} Bank Loan to Invest", "loan_invest"),
                     ("Pass on opportunity", "pass")
                 ]
             }
@@ -502,7 +490,7 @@ class LifeGame:
             c["car_sale"] = self.price(1000)
             return c, {
                 "title": "Vehicle Repair",
-                "desc": "Your car needs urgent repairs.",
+                "desc": "Your car transmission needs maintenance.",
                 "options": [
                     (f"Pay ${c['car']:,} cash to fix", "fix_car_cash"),
                     (f"Charge ${c['car']:,} to Credit Card", "fix_car_loan"),
@@ -513,23 +501,23 @@ class LifeGame:
             c["used_car"] = self.price(2500)
             return c, {
                 "title": "Commute Difficulty",
-                "desc": "Taking transit is hurting your work performance.",
+                "desc": "Public transit delays are frustrating your daily schedule.",
                 "options": [
                     (f"Buy used car (${c['used_car']:,} Cash)", "buy_car_cash"),
                     (f"Finance used car (${c['used_car']:,} Debt)", "buy_car_loan"),
-                    ("Keep taking public transit", "bus")
+                    ("Keep taking transit (-10 Happiness)", "bus")
                 ]
             }
         if key == "vacation":
             c["vacation"] = self.price(1200)
             c["extra_work"] = self.wage(500)
             return c, {
-                "title": "Vacation Opportunity",
-                "desc": "Friends invite you on a trip.",
+                "title": "Tropical Resort Vacation",
+                "desc": "You have an opportunity to book a relaxing beach vacation.",
                 "options": [
-                    (f"Go on trip (${c['vacation']:,} Cash, +25 HP)", "vacation_cash"),
-                    (f"Charge trip to Credit Card (${c['vacation']:,}, +25 HP)", "vacation_loan"),
-                    (f"Decline & work extra (+${c['extra_work']:,}, -10 HP)", "vacation_skip")
+                    (f"Book trip (${c['vacation']:,} Cash, +35 Happiness)", "vacation_cash"),
+                    (f"Charge trip to Credit Card (${c['vacation']:,}, +35 Happiness)", "vacation_loan"),
+                    (f"Decline & work overtime (+${c['extra_work']:,}, -15 Happiness)", "vacation_skip")
                 ]
             }
         if key == "course":
@@ -537,8 +525,8 @@ class LifeGame:
             c["bonus"] = self.COURSE_BASE_BONUS
             bonus_now = self.wage(c["bonus"])
             return c, {
-                "title": "Career Course",
-                "desc": f"Certification {self.courses_taken + 1}/{self.MAX_COURSES}: boost quarterly salary.",
+                "title": "Career Certification",
+                "desc": f"Certification {self.courses_taken+1}/{self.MAX_COURSES}: permanently boost your quarterly salary.",
                 "options": [
                     (f"Pay ${c['course']:,} Cash (Income +${bonus_now:,}/qtr)", "course_cash"),
                     (f"Finance ${c['course']:,} on Credit Card", "course_loan"),
@@ -548,7 +536,7 @@ class LifeGame:
         if key == "debt":
             c["pay"] = min(self.debt, self.price(1000))
             return c, {
-                "title": "Debt Settlement",
+                "title": "Debt Settlement Offer",
                 "desc": "Your bank offers a credit score bonus if you pay off debt now.",
                 "options": [
                     (f"Pay ${c['pay']:,} Debt now (+10 Credit)", "pay_debt_now"),
@@ -558,7 +546,7 @@ class LifeGame:
         c["severance"] = self.wage(1200)
         return c, {
             "title": "Company Layoff",
-            "desc": "Your company is cutting costs.",
+            "desc": "Your company is downsizing staff.",
             "options": [
                 (f"Take severance (+${c['severance']:,}, 50% pay for 2 qtrs)", "layoff_severance"),
                 ("Switch to temp role (75% pay for 2 qtrs)", "layoff_temp"),
@@ -575,7 +563,7 @@ class LifeGame:
     def option_block_reason(self, action):
         c = self.event_costs
         cash_needed = {
-            "pay_med": c.get("med"),
+            "pay_leisure": c.get("cost"),
             "invest_index": c.get("invest"),
             "fix_car_cash": c.get("car"),
             "buy_car_cash": c.get("used_car"),
@@ -591,9 +579,9 @@ class LifeGame:
     def build_event_buttons(self):
         self.event_buttons = []
         options = self.current_event["options"]
-        bw, bh = 940, 100
-        start_y = 1140
-        spacing = 25
+        bw, bh = 940, 95
+        start_y = 1150
+        spacing = 20
 
         for i, (text, action) in enumerate(options):
             reason = self.option_block_reason(action)
@@ -612,20 +600,19 @@ class LifeGame:
             self.update_credit_on_payment("on_time")
             self.add_log("Attended Credit Workshop! Credit +15", GREEN)
 
-        elif action == "pay_med":
-            self.cash -= c["med"]
-            self.health = min(100, self.health + 25)
-            self.add_log(f"Paid ${c['med']:,} medical bill cash. Health +25", GREEN)
+        elif action == "pay_leisure":
+            self.cash -= c["cost"]
+            self.happiness = min(100, self.happiness + 25)
+            self.add_log(f"Paid ${c['cost']:,} for weekend trip. Happiness +25", GREEN)
 
-        elif action == "debt_med":
-            # Paying with credit card DOES NOT lower credit score immediately. Only unpaid debt lowers it later.
-            self.debt += c["med"]
-            self.health = min(100, self.health + 25)
-            self.add_log(f"Charged ${c['med']:,} to credit card. Debt +${c['med']:,}", YELLOW)
+        elif action == "debt_leisure":
+            self.debt += c["cost"]
+            self.happiness = min(100, self.happiness + 25)
+            self.add_log(f"Charged ${c['cost']:,} trip to credit card. Debt +${c['cost']:,}", YELLOW)
 
-        elif action == "skip_med":
-            self.health = max(0, self.health - c["skip_hp"])
-            self.add_log(f"Skipped care. Health dropped by {c['skip_hp']}", ORANGE)
+        elif action == "skip_leisure":
+            self.happiness = max(0, self.happiness - c["skip_hp"])
+            self.add_log(f"Skipped trip. Happiness dropped by {c['skip_hp']}", ORANGE)
 
         elif action == "invest_index":
             self.cash -= c["invest"]
@@ -636,7 +623,7 @@ class LifeGame:
             fee = math.ceil(c["invest_loan"] * self.interest_rate())
             self.debt += c["invest_loan"] + fee
             self.investments += c["invest_loan"]
-            self.add_log(f"Borrowed ${c['invest_loan']:,} to invest. Debt +${c['invest_loan'] + fee:,}", YELLOW)
+            self.add_log(f"Borrowed ${c['invest_loan']:,} to invest. Debt +${c['invest_loan']+fee:,}", YELLOW)
 
         elif action == "fix_car_cash":
             self.cash -= c["car"]
@@ -662,23 +649,23 @@ class LifeGame:
             self.add_log(f"Financed car (${c['used_car']:,}). Debt +${c['used_car']:,}", YELLOW)
 
         elif action == "bus":
-            self.health = max(0, self.health - 10)
-            self.add_log("Stuck with public transit. Health -10", ORANGE)
+            self.happiness = max(0, self.happiness - 10)
+            self.add_log("Stuck with public transit. Happiness -10", ORANGE)
 
         elif action == "vacation_cash":
             self.cash -= c["vacation"]
-            self.health = min(100, self.health + 25)
-            self.add_log(f"Took vacation (${c['vacation']:,} cash). Health +25", GREEN)
+            self.happiness = min(100, self.happiness + 35)
+            self.add_log(f"Took vacation (${c['vacation']:,} cash). Happiness +35", GREEN)
 
         elif action == "vacation_loan":
             self.debt += c["vacation"]
-            self.health = min(100, self.health + 25)
+            self.happiness = min(100, self.happiness + 35)
             self.add_log(f"Charged vacation (${c['vacation']:,}) to credit card", YELLOW)
 
         elif action == "vacation_skip":
             self.cash += c["extra_work"]
-            self.health = max(0, self.health - 10)
-            self.add_log(f"Worked extra shifts (+${c['extra_work']:,}, Health -10)", WHITE)
+            self.happiness = max(0, self.happiness - 15)
+            self.add_log(f"Worked extra shifts (+${c['extra_work']:,}, Happiness -15)", WHITE)
 
         elif action in ("course_cash", "course_loan"):
             if action == "course_cash":
@@ -691,7 +678,6 @@ class LifeGame:
 
         elif action == "pay_debt_now":
             pay = self.repay(c["pay"])
-            self.update_credit_on_payment("on_time")
             self.add_log(f"Settled ${pay:,} debt! Bonus credit boost", GREEN)
 
         elif action == "layoff_severance":
@@ -713,46 +699,47 @@ class LifeGame:
 def draw_card_prompt(surface, game, buttons, mouse_pos):
     surface.fill(BG_COLOR)
 
-    card_rect = pygame.Rect(70, 260, 940, 1200)
+    card_rect = pygame.Rect(70, 240, 940, 1240)
     pygame.draw.rect(surface, CARD_BG, card_rect, border_radius=24)
     pygame.draw.rect(surface, ACCENT, card_rect, 4, border_radius=24)
 
     ts = FONT_TITLE.render("WELCOME TO LIFE", True, ACCENT)
-    tr = ts.get_rect(center=(VIRTUAL_WIDTH // 2, 340))
+    tr = ts.get_rect(center=(VIRTUAL_WIDTH // 2, 310))
     surface.blit(ts, tr)
 
     subtitle = FONT_HEADER.render("Financial Odyssey (18 - 65)", True, WHITE)
-    sr = subtitle.get_rect(center=(VIRTUAL_WIDTH // 2, 420))
+    sr = subtitle.get_rect(center=(VIRTUAL_WIDTH // 2, 380))
     surface.blit(subtitle, sr)
 
     msg_lines = [
         "Congratulations! You turn 18 today.",
         "You have APPLIED FOR YOUR FIRST CREDIT CARD!",
         "",
-        "--- KEY RULES & CHECKLIST UPDATES ---",
+        "--- GAME RULES & CREDIT GUIDE ---",
         "• Turn duration: 1 turn = 3 Months (18 to 65).",
-        "• Compulsory Expenses: Groceries billed automatically.",
-        "• Single Health Buy: $1,200 for +30 Health.",
-        "• Paying with Credit Card does NOT drop score.",
-        "  Score drops only when debt is carried or missed!",
-        "• Credit Score limits:",
-        "  - Missed payment: -50 pts | Unpaid debt: -20 pts",
-        "  - Max 700 score before 5 years of history.",
-        "  - On-time payments boost score (Capped at 1000).",
-        "• Early Retirement: Available once reaching $1M Net Worth!",
-        "• Credit < 299 for 2 yrs or 0 Health for 1 yr = DEATH"
+        "• Happiness System: Spend cash on leisure to maintain happiness.",
+        "  (0 Happiness for 1 year = DEATH BY DEPRESSION)",
+        "• Income: Salary is NOT penalized by low happiness.",
+        "• Credit Score Guide:",
+        "  - High Credit: Low loan interest (~0.75%/qtr) & higher score bonus.",
+        "  - Low Credit: High interest (~3.25%/qtr), loan rejection, IRS seizure.",
+        "  - How to improve: Pay debt on time (+5 pts), streaks (+2 pts).",
+        "  - Penalties: Missed payment (-50 pts), carrying debt (-20 pts).",
+        "  - 5-Year History Cap: Credit score capped at 700 for first 5 years.",
+        "• Retrieve Investment: Pull cash out of investments anytime ($500 button).",
+        "• Early Retirement: Retire anytime once Net Worth reaches $1,000,000!"
     ]
 
-    y = 500
+    y = 450
     for line in msg_lines:
         color = ACCENT if "---" in line else (GREEN if "APPLIED" in line else WHITE)
         font = FONT_MEDIUM if "---" in line or "APPLIED" in line else FONT_REGULAR
         t = font.render(line, True, color)
         r = t.get_rect(center=(VIRTUAL_WIDTH // 2, y))
         surface.blit(t, r)
-        y += 45
+        y += 42
 
-    start_btn = Button(190, 1500, 700, 120, "BEGIN YOUR JOURNEY", GREEN, DARK_GREEN, FONT_TITLE)
+    start_btn = Button(190, 1500, 700, 110, "BEGIN YOUR JOURNEY", GREEN, DARK_GREEN, FONT_TITLE)
     start_btn.check_hover(mouse_pos)
     start_btn.draw(surface)
     buttons.append(start_btn)
@@ -762,102 +749,111 @@ def draw_main_dashboard(surface, game, buttons, mouse_pos):
     surface.fill(BG_COLOR)
 
     # Top Header Panel
-    header_rect = pygame.Rect(40, 40, 1000, 220)
+    header_rect = pygame.Rect(40, 30, 1000, 200)
     pygame.draw.rect(surface, CARD_BG, header_rect, border_radius=20)
     pygame.draw.rect(surface, GRAY, header_rect, 2, border_radius=20)
 
     qtr = (game.age_months // 3) + 1
     t_age = FONT_TITLE.render(f"AGE: {game.age_years} (Q{qtr})", True, ACCENT)
-    surface.blit(t_age, (70, 70))
+    surface.blit(t_age, (70, 55))
 
     t_nw = FONT_HEADER.render(f"Net Worth: ${game.get_net_worth():,}", True,
                               GREEN if game.get_net_worth() >= 0 else RED)
-    surface.blit(t_nw, (70, 160))
+    surface.blit(t_nw, (70, 140))
 
     # Stats Panel
-    stats_rect = pygame.Rect(40, 290, 1000, 560)
+    stats_rect = pygame.Rect(40, 250, 1000, 560)
     pygame.draw.rect(surface, CARD_BG, stats_rect, border_radius=20)
     pygame.draw.rect(surface, GRAY, stats_rect, 2, border_radius=20)
 
-    # Health Bar
-    pay_pct = int(round(game.health_multiplier() * 100))
-    t_h = FONT_MEDIUM.render(f"HEALTH: {game.health}/100 (Work Efficiency: {pay_pct}%)", True, WHITE)
-    surface.blit(t_h, (80, 330))
-    pygame.draw.rect(surface, DARK_GRAY, (80, 375, 880, 34), border_radius=17)
-    h_width = int(880 * (game.health / 100))
-    h_color = GREEN if game.health > 50 else (YELLOW if game.health > 25 else RED)
+    # Happiness Bar (Replaced Health)
+    t_h = FONT_MEDIUM.render(f"HAPPINESS: {game.happiness}/100", True, WHITE)
+    surface.blit(t_h, (80, 285))
+    pygame.draw.rect(surface, DARK_GRAY, (80, 325, 880, 32), border_radius=16)
+    h_width = int(880 * (game.happiness / 100))
+    h_color = GREEN if game.happiness > 50 else (YELLOW if game.happiness > 25 else RED)
     if h_width > 0:
-        pygame.draw.rect(surface, h_color, (80, 375, h_width, 34), border_radius=17)
+        pygame.draw.rect(surface, h_color, (80, 325, h_width, 32), border_radius=16)
 
     # Credit Score Bar (Capped at 1000)
-    history_note = " (Under 5yr Limit: Max 700)" if game.turns_played < 20 else ""
-    t_c = FONT_MEDIUM.render(f"CREDIT SCORE: {game.credit_score} / 1000{history_note}", True, WHITE)
-    surface.blit(t_c, (80, 435))
-    pygame.draw.rect(surface, DARK_GRAY, (80, 480, 880, 34), border_radius=17)
+    history_note = " (5yr Cap: Max 700)" if game.turns_played < 20 else ""
+    rate_str = f"Loan Rate: {game.interest_rate():.2%}/qtr"
+    t_c = FONT_MEDIUM.render(f"CREDIT SCORE: {game.credit_score}/1000{history_note}  [{rate_str}]", True, WHITE)
+    surface.blit(t_c, (80, 380))
+    pygame.draw.rect(surface, DARK_GRAY, (80, 420, 880, 32), border_radius=16)
     c_width = int(880 * (game.credit_score / 1000))
     c_color = GREEN if game.credit_score >= 700 else (YELLOW if game.credit_score >= 500 else RED)
     if c_width > 0:
-        pygame.draw.rect(surface, c_color, (80, 480, c_width, 34), border_radius=17)
+        pygame.draw.rect(surface, c_color, (80, 420, c_width, 32), border_radius=16)
 
     # Threshold Warnings
     if game.credit_score < 299 or game.low_credit_turns > 0:
         w_t = FONT_SMALL.render(f"WARNING: IRS SEIZURE RISK ({game.low_credit_turns}/8 strikes)", True, RED)
-        surface.blit(w_t, (80, 525))
-    if game.health <= 0 or game.zero_health_turns > 0:
-        w_h = FONT_SMALL.render(f"WARNING: CRITICAL HEALTH ({game.zero_health_turns}/4 strikes)", True, RED)
-        surface.blit(w_h, (80, 545))
+        surface.blit(w_t, (80, 462))
+    if game.happiness <= 0 or game.zero_happiness_turns > 0:
+        w_h = FONT_SMALL.render(f"WARNING: CRITICAL DEPRESSION ({game.zero_happiness_turns}/4 strikes)", True, RED)
+        surface.blit(w_h, (80, 482))
 
     # Financial Details Grid
     fin_items = [
         ("Cash Balance", f"${game.cash:,}", GREEN),
         ("Total Debt", f"${game.debt:,}", RED if game.debt > 0 else GRAY),
         ("Investments", f"${game.investments:,}", BLUE),
-        ("Qtr Pay / Groceries", f"${game.quarterly_income():,} / ${game.compulsory_groceries():,}", ACCENT)
+        ("Qtr Pay / Essentials", f"${game.quarterly_income():,} / ${game.compulsory_groceries():,}", ACCENT)
     ]
 
-    y_grid = 585
+    y_grid = 520
     for i, (label, val, col) in enumerate(fin_items):
         rx = 80 + (i % 2) * 450
-        ry = y_grid + (i // 2) * 95
+        ry = y_grid + (i // 2) * 90
         tl = FONT_REGULAR.render(label, True, GRAY)
         tv = FONT_HEADER.render(val, True, col)
         surface.blit(tl, (rx, ry))
-        surface.blit(tv, (rx, ry + 30))
+        surface.blit(tv, (rx, ry + 28))
 
-    # Credit limit & Overdraft status
-    status = [f"Credit Limit: ${game.CREDIT_CARD_LIMIT:,}", f"Overdraft: ${game.OVERDRAFT_LIMIT:,}"]
+    # Credit limit status
+    status = [f"Credit Limit: ${game.CREDIT_CARD_LIMIT:,}", f"Overdraft Limit: ${game.OVERDRAFT_LIMIT:,}"]
     if game.early_retire_offered:
-        status.append("EARLY RETIREMENT AVAILABLE!")
+        status.append("EARLY RETIREMENT READY!")
     t_status = FONT_SMALL.render("  |  ".join(status), True, ACCENT if game.early_retire_offered else GRAY)
-    surface.blit(t_status, (80, 785))
+    surface.blit(t_status, (80, 750))
 
-    # Single Option to Buy Health
+    # Action Buttons Grid
     bw = 460
-    buy_h = Button(40, 860, bw, 95, f"Buy Healthcare (-${game.health_cost():,}, Health +30)", GREEN, DARK_GREEN,
-                   FONT_REGULAR)
-    buy_h.action = "buy_health"
-    buy_h.enabled = game.can_buy_health()
+    bh = 85
+    
+    # Row 1: Happiness & Retrieve Investment Buttons
+    buy_h = Button(40, 830, bw, bh, f"Buy Leisure/Hobbies (-${game.happiness_cost():,}, +30 HP)", GREEN, DARK_GREEN, FONT_REGULAR)
+    buy_h.action = "buy_happiness"
+    buy_h.enabled = game.can_buy_happiness()
     buy_h.check_hover(mouse_pos)
     buy_h.draw(surface)
     buttons.append(buy_h)
 
-    # Get a Bank Loan
-    loan_b = Button(540, 860, bw, 95, "Take $1,000 Bank Loan", YELLOW, DARK_YELLOW, FONT_REGULAR, BLACK)
+    ret_inv = Button(540, 830, bw, bh, "Retrieve $500 Investment", PURPLE, DARK_BLUE, FONT_REGULAR)
+    ret_inv.action = "quick_withdraw"
+    ret_inv.enabled = game.can_withdraw()
+    ret_inv.check_hover(mouse_pos)
+    ret_inv.draw(surface)
+    buttons.append(ret_inv)
+
+    # Row 2: Take Bank Loan & Pay Debt
+    loan_b = Button(40, 930, bw, bh, "Take $1,000 Bank Loan", YELLOW, DARK_YELLOW, FONT_REGULAR, BLACK)
     loan_b.action = "get_loan"
     loan_b.enabled = game.credit_score >= 400
     loan_b.check_hover(mouse_pos)
     loan_b.draw(surface)
     buttons.append(loan_b)
 
-    # Debt / Invest Quick Actions
-    pay_d = Button(40, 970, bw, 95, "Pay $500 Debt", ORANGE, DARK_YELLOW, FONT_REGULAR)
+    pay_d = Button(540, 930, bw, bh, "Pay $500 Debt", ORANGE, DARK_YELLOW, FONT_REGULAR)
     pay_d.action = "quick_pay_debt"
     pay_d.enabled = game.can_pay_debt()
     pay_d.check_hover(mouse_pos)
     pay_d.draw(surface)
     buttons.append(pay_d)
 
-    inv_b = Button(540, 970, bw, 95, "Invest $500", PURPLE, DARK_BLUE, FONT_REGULAR)
+    # Row 3: Invest $500
+    inv_b = Button(40, 1030, 960, 65, "Invest $500 in Stock Market", BLUE, DARK_BLUE, FONT_REGULAR)
     inv_b.action = "quick_invest"
     inv_b.enabled = game.can_invest()
     inv_b.check_hover(mouse_pos)
@@ -865,27 +861,27 @@ def draw_main_dashboard(surface, game, buttons, mouse_pos):
     buttons.append(inv_b)
 
     # Log Panel
-    log_rect = pygame.Rect(40, 1100, 1000, 360)
+    log_rect = pygame.Rect(40, 1115, 1000, 340)
     pygame.draw.rect(surface, CARD_BG, log_rect, border_radius=20)
     pygame.draw.rect(surface, GRAY, log_rect, 2, border_radius=20)
 
-    t_log = FONT_MEDIUM.render("RECENT EVENTS & TRANSACTIONS", True, ACCENT)
-    surface.blit(t_log, (70, 1120))
+    t_log = FONT_MEDIUM.render("RECENT TRANSACTIONS & LOG", True, ACCENT)
+    surface.blit(t_log, (70, 1135))
 
     for i, (txt, col) in enumerate(game.log):
         lt = FONT_REGULAR.render(txt, True, col)
-        surface.blit(lt, (70, 1175 + i * 40))
+        surface.blit(lt, (70, 1185 + i * 38))
 
     # Early Retirement button if eligible
     if game.early_retire_offered:
-        retire_btn = Button(40, 1480, 1000, 70, "RETIRE EARLY ($1M+ REACHED!)", ACCENT, DARK_YELLOW, FONT_HEADER, BLACK)
+        retire_btn = Button(40, 1475, 1000, 70, "RETIRE EARLY ($1M+ NET WORTH REACHED!)", ACCENT, DARK_YELLOW, FONT_HEADER, BLACK)
         retire_btn.action = "early_retire"
         retire_btn.check_hover(mouse_pos)
         retire_btn.draw(surface)
         buttons.append(retire_btn)
-
+        
     # Advance Quarter Button
-    next_btn = Button(140, 1570, 800, 110, "ADVANCE 3 MONTHS >>", ACCENT, DARK_YELLOW, FONT_TITLE, BLACK)
+    next_btn = Button(140, 1565, 800, 110, "ADVANCE 3 MONTHS >>", ACCENT, DARK_YELLOW, FONT_TITLE, BLACK)
     next_btn.action = "next_quarter"
     next_btn.check_hover(mouse_pos)
     next_btn.draw(surface)
@@ -898,15 +894,15 @@ def draw_event_screen(surface, game, buttons, mouse_pos):
     overlay.fill((0, 0, 0))
     surface.blit(overlay, (0, 0))
 
-    card_rect = pygame.Rect(50, 280, 980, 1300)
+    card_rect = pygame.Rect(50, 260, 980, 1320)
     pygame.draw.rect(surface, CARD_BG, card_rect, border_radius=24)
     pygame.draw.rect(surface, ACCENT, card_rect, 4, border_radius=24)
 
     ev_tag = FONT_MEDIUM.render(f"QUARTERLY EVENT - AGE {game.age_years}", True, ACCENT)
-    surface.blit(ev_tag, (VIRTUAL_WIDTH // 2 - ev_tag.get_width() // 2, 330))
+    surface.blit(ev_tag, (VIRTUAL_WIDTH // 2 - ev_tag.get_width() // 2, 310))
 
     title = FONT_TITLE.render(game.current_event["title"], True, WHITE)
-    surface.blit(title, (VIRTUAL_WIDTH // 2 - title.get_width() // 2, 410))
+    surface.blit(title, (VIRTUAL_WIDTH // 2 - title.get_width() // 2, 380))
 
     words = game.current_event["desc"].split()
     lines = []
@@ -921,15 +917,40 @@ def draw_event_screen(surface, game, buttons, mouse_pos):
     if curr:
         lines.append(curr)
 
-    y = 510
+    y = 470
     for line in lines:
         t = FONT_MEDIUM.render(line, True, GRAY)
         surface.blit(t, (VIRTUAL_WIDTH // 2 - t.get_width() // 2, y))
         y += 45
 
-    stat_txt = f"Cash: ${game.cash:,}  |  Debt: ${game.debt:,}  |  Health: {game.health}  |  Credit: {game.credit_score}"
+    # Informational Credit Guide Block (Credit Workshop)
+    if game.current_event["title"] == "Credit Score Workshop":
+        info_rect = pygame.Rect(80, 720, 920, 310)
+        pygame.draw.rect(surface, (20, 30, 45), info_rect, border_radius=16)
+        pygame.draw.rect(surface, ACCENT, info_rect, 2, border_radius=16)
+        
+        info_lines = [
+            "--- CREDIT SCORE SUMMARY & GUIDE ---",
+            "• High Score Benefits: Lower loan interest (~0.75%/qtr vs 3.25%/qtr) & higher final score multiplier.",
+            "• Low Score Drawbacks: Expensive debt interest, rejected loans, & IRS asset seizure (<299 for 2 yrs).",
+            "• How to Improve Credit Score:",
+            "  1. Pay debt on time (+5 points).",
+            "  2. Maintain consecutive payment streaks (+2 extra points).",
+            "  3. Avoid missed payments (-50 points) and carrying unpaid debt (-20 points).",
+            "  4. 5-Year History Cap: Cannot cross 700 points during the first 5 years."
+        ]
+        iy = 735
+        for iline in info_lines:
+            icol = ACCENT if "---" in iline else WHITE
+            if "How to" in iline:
+                icol = GREEN
+            it = FONT_SMALL.render(iline, True, icol)
+            surface.blit(it, (100, iy))
+            iy += 35
+
+    stat_txt = f"Cash: ${game.cash:,}  |  Debt: ${game.debt:,}  |  Happiness: {game.happiness}  |  Credit: {game.credit_score}"
     st = FONT_REGULAR.render(stat_txt, True, ACCENT)
-    surface.blit(st, (VIRTUAL_WIDTH // 2 - st.get_width() // 2, 1050))
+    surface.blit(st, (VIRTUAL_WIDTH // 2 - st.get_width() // 2, 1070))
 
     for btn in game.event_buttons:
         btn.check_hover(mouse_pos)
@@ -950,11 +971,11 @@ def draw_game_over_screen(surface, game, buttons, mouse_pos):
     elif game.death_reason == "IRS_SEIZURE":
         borderColor = RED
         title_text = "IRS SEIZED YOUR ASSETS!"
-        sub_text = "Credit score stayed under 299 for 2 years. Bankrupt & Bankrupt!"
+        sub_text = "Credit score stayed under 299 for 2 years. Died in prison!"
     else:
         borderColor = RED
-        title_text = "HEALTH COLLAPSED!"
-        sub_text = "Health stayed at 0 for too long."
+        title_text = "DIED OF DEPRESSION!"
+        sub_text = "Happiness remained at 0 for over a year."
 
     pygame.draw.rect(surface, borderColor, card_rect, 4, border_radius=24)
 
@@ -1049,8 +1070,10 @@ def main():
                     act = getattr(btn, "action", None)
                     if act == "next_quarter":
                         game.next_turn()
-                    elif act == "buy_health":
-                        game.buy_health()
+                    elif act == "buy_happiness":
+                        game.buy_happiness()
+                    elif act == "quick_withdraw":
+                        game.quick_withdraw(500)
                     elif act == "get_loan":
                         game.take_user_loan(1000)
                     elif act == "quick_pay_debt":
