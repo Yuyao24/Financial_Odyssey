@@ -461,11 +461,11 @@ class LifeGame:
             return c, {
                 "title": "Credit Score Workshop",
                 "desc": "A local financial workshop explains credit scoring rules:"
-                        
+
                         "• Paying with a credit card does NOT hurt score; only unpaid debt causes penalties."
-                        
+
                         "• Missing a payment: -50 pts | Late payment: -20 pts."
-                        
+
                         "• Score cannot cross 700 until 5 years of history.",
                 "options": [
                     ("Attend Workshop (Gain +15 Credit)", "attend_edu"),
