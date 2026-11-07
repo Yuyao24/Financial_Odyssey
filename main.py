@@ -7,15 +7,10 @@ FPS = 60
 
 class Game:
     def __init__(self):
-        self.screen = pygame.display.set_mode((GAME_W, GAME_H))
-
         # Init
         pygame.init()
-        self.info = pygame.display.Info()
-        self.screen = pygame.display.set_mode(
-            (self.info.current_w, self.info.current_h),
-            pygame.NOFRAME
-        )
+        # Default windowed size (e.g. 1280x720) with resizable support
+        self.screen = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
         pygame.display.set_caption("Credit Capital")
         self.clock = pygame.time.Clock()
 
@@ -38,14 +33,11 @@ class Game:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
+                elif event.type == pygame.VIDEORESIZE:
+                    self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
-                    elif event.key == pygame.K_F11:
-                        screen = pygame.display.set_mode(
-                            (self.info.current_w, self.info.current_h),
-                            0 if pygame.NOFRAME & self.screen.get_flags() else pygame.NOFRAME
-                        )
 
             # 2. Update
             keys = pygame.key.get_pressed()
@@ -84,7 +76,7 @@ class Game:
         pygame.display.flip()
 
     # Calc final score
-    def calculate_final_score(self, net_worth, credit_score):
+    def calculate_final_score(self, net_worth, credit_score, age):
         if credit_score <= 640:
             score_multiplier = 0.5
         elif credit_score <= 860:
