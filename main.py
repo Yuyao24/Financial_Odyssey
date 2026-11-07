@@ -70,5 +70,19 @@ while running:
     # 5. Frame rate
     clock.tick(FPS)
 
+
+def final_score(net_worth, credit_score):
+    if credit_score <= 640:
+        score_muiltiplier = 0.5
+    elif credit_score <= 860:
+        score_muiltiplier = 1.0
+    elif credit_score <= 1120:
+        score_muiltiplier = 1.3
+    elif credit_score > 1400:
+        score_muiltiplier = 2.0
+
+    score = net_worth * score_muiltiplier
+    return score
+
 pygame.quit()
 sys.exit()
