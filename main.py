@@ -2,22 +2,24 @@
 """
 Financial Odyssey: 18 to 65  —  PyQt6 edition
 
-Layout strategy (consistent on every screen / aspect ratio):
-  The whole UI is built once on a fixed 1080 x 1920 (9:16) virtual canvas with
-  pixel-sized fonts. That canvas lives inside a QGraphicsView and is scaled
-  uniformly (vector scaling, so text stays sharp) and centred, with black bars
-  filling any leftover space. Every device therefore sees the exact same layout,
-  and text that fits once fits everywhere. On top of that, all long text uses
-  word-wrapping and single-line values auto-shrink to fit their boxes.
+Layouts: "mobile" (fixed 1080x1920, vertical) or "desktop" (fixed 1920x1080, horizontal),
+chosen in Settings. The chosen canvas is scaled uniformly into the window and centred, with
+black bars filling any leftover space, so every screen shape shows the identical layout.
+Pixel-sized fonts, word-wrapping and auto-shrinking labels keep text inside its boxes.
+
+Themes: light / dark (Settings). Progress auto-saves after every move and on close to
+  <user app-data folder>/savegame.json   (settings in settings.json next to it)
 
 Controls:  F11 = toggle fullscreen,  Esc = leave fullscreen.
 """
 import html
+import json
 import math
+import os
 import random
 import sys
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QRect
+from PyQt6.QtCore import Qt, QTimer, QRectF, QRect, QPointF, QSize, QStandardPaths
 from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QPainter, QPen, QBrush,
                          QGuiApplication, QTransform, QShortcut, QKeySequence)
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QFrame, QLabel,
@@ -233,6 +235,28 @@ class LifeGame:
         self.millionaire_notified = False
         self.had_debt = False
         self.stats = {"interest": 0, "fees": 0, "on_time": 0, "late": 0, "missed": 0}
+
+    # ------------------------------------------------------------ save/load --
+    SAVE_VERSION = 1
+    _TRANSIENT = ("rng", "popups", "toasts")
+
+    def to_dict(self):
+        d = {k: v for k, v in self.__dict__.items() if k not in self._TRANSIENT}
+        d["rng_state"] = self.rng.getstate()
+        d["save_version"] = self.SAVE_VERSION
+        return d
+
+    @classmethod
+    def from_dict(cls, d):
+        g = cls(seed=d.get("seed"))
+        for k, v in d.items():
+            if k in g.__dict__ and k not in cls._TRANSIENT:
+                setattr(g, k, v)
+        st = d.get("rng_state")
+        if st:
+            g.rng.setstate((st[0], tuple(st[1]), st[2]))
+        g.log = [tuple(x) for x in g.log]
+        return g
 
     def start(self):
         self.state = "main"
@@ -1241,47 +1265,90 @@ class LifeGame:
 # =============================================================================
 #                                  UI LAYER
 # =============================================================================
-VW, VH = 1080, 1920                      # fixed virtual canvas (9:16)
+CANVAS = {"mobile": (1080, 1920), "desktop": (1920, 1080)}
 
-C_BG = "#0A1120"
-C_CARD = "#121A2C"
-C_BORDER = "#22304D"
-C_TEXT = "#EEF2FA"
-C_MUTED = "#8A97B1"
-C_DIM = "#56627C"
-C_GREEN = "#22C55E"
-C_RED = "#EF4444"
-C_RED_L = "#F87171"
-C_AMBER = "#F59E0B"
-C_GOLD = "#FACC15"
-C_BLUE = "#3B82F6"
-C_PURPLE = "#8B5CF6"
-C_TEAL = "#14B8A6"
+_TINTS_LIGHT = {  # name: (background, hover background, text)
+    "blue":   ("#E0E7FF", "#C7D2FE", "#312E81"),
+    "purple": ("#EDE9FE", "#DDD6FE", "#4C1D95"),
+    "amber":  ("#FEF3C7", "#FDE68A", "#78350F"),
+    "teal":   ("#CCFBF1", "#99F6E4", "#134E4A"),
+    "green":  ("#DCFCE7", "#BBF7D0", "#14532D"),
+    "red":    ("#FEE2E2", "#FECACA", "#7F1D1D"),
+    "pink":   ("#FCE7F3", "#FBCFE8", "#831843"),
+    "slate":  ("#F1F2F5", "#E4E6EB", "#1F2937"),
+}
+_TINTS_DARK = {
+    "blue":   ("#23274A", "#2E3363", "#C7D2FE"),
+    "purple": ("#2A2347", "#362D5C", "#DDD6FE"),
+    "amber":  ("#33270F", "#443416", "#FDE68A"),
+    "teal":   ("#0F2E2B", "#153F3A", "#99F6E4"),
+    "green":  ("#11301D", "#174027", "#BBF7D0"),
+    "red":    ("#3A1717", "#4B1E1E", "#FECACA"),
+    "pink":   ("#3A1A2A", "#4B2237", "#FBCFE8"),
+    "slate":  ("#20242D", "#2B303B", "#E5E7EB"),
+}
+THEMES = {
+    "light": dict(
+        bg_top="#F4F5F7", bg_bot="#E6E9EE", card="#FFFFFF", border="#E7E9ED", border_strong="#D3D7DE",
+        surface="#F4F5F8", text="#0F1115", text2="#374151", muted="#6B7280", dim="#A3A9B5", track="#ECEEF2",
+        primary="#111317", primary_hover="#2B2E35", primary_text="#FFFFFF",
+        modal="#FFFFFF", modal_border="#E7E9ED", overlay=(17, 19, 24, 110),
+        disabled_bg="#F1F2F4", disabled_text="#BAC0CA",
+        green="#16A34A", red="#DC2626", amber="#D97706", gold="#B7791F", blue="#4F46E5",
+        purple="#7C3AED", teal="#0D9488", lime="#65A30D", pink="#DB2777",
+        seg_fill="#A5B4FC", seg_fill2="#F9A8D4", tints=_TINTS_LIGHT),
+    "dark": dict(
+        bg_top="#0F1116", bg_bot="#07080B", card="#16191F", border="#242832", border_strong="#3A404C",
+        surface="#1D2129", text="#F4F5F7", text2="#D1D5DB", muted="#9CA3AF", dim="#5F6673", track="#232833",
+        primary="#F4F5F7", primary_hover="#FFFFFF", primary_text="#0F1115",
+        modal="#16191F", modal_border="#2B303B", overlay=(0, 0, 0, 170),
+        disabled_bg="#1A1D23", disabled_text="#4B5160",
+        green="#4ADE80", red="#F87171", amber="#FBBF24", gold="#FACC15", blue="#818CF8",
+        purple="#A78BFA", teal="#2DD4BF", lime="#A3E635", pink="#F472B6",
+        seg_fill="#818CF8", seg_fill2="#F472B6", tints=_TINTS_DARK),
+}
+T = dict(THEMES["light"])          # the active theme; mutated in place on switch
 
-TONE_COLORS = {"info": "#C9D3E6", "good": "#4ADE80", "bad": C_RED_L, "warn": "#FBBF24",
-               "card": "#A78BFA", "invest": "#60A5FA", "gold": C_GOLD}
+
+def use_theme(name):
+    T.clear()
+    T.update(THEMES.get(name, THEMES["light"]))
+
 
 FAMILIES = ["Segoe UI", "SF Pro Display", "Inter", "Helvetica Neue", "Roboto",
             "Noto Sans", "Arial", "DejaVu Sans"]
-
-W_NORMAL, W_MED, W_SEMI, W_BOLD = (QFont.Weight.Normal, QFont.Weight.Medium,
-                                    QFont.Weight.DemiBold, QFont.Weight.Bold)
+W_LIGHT, W_NORMAL, W_MED, W_SEMI, W_BOLD = (QFont.Weight.Light, QFont.Weight.Normal, QFont.Weight.Medium,
+                                            QFont.Weight.DemiBold, QFont.Weight.Bold)
+AL_C = Qt.AlignmentFlag.AlignCenter
+AL_L = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+AL_R = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
 
 
 def make_font(px, weight=W_NORMAL):
     f = QFont()
     f.setFamilies(FAMILIES)
-    f.setPixelSize(int(px))           # pixel sizes => identical layout at any DPI
+    f.setPixelSize(int(px))            # pixel sizes => identical layout at any DPI
     f.setWeight(weight)
-    f.setHintingPreference(QFont.HintingPreference.PreferNoHinting)  # scales cleanly
+    f.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     return f
 
 
-def label(text="", px=24, weight=W_NORMAL, color=C_TEXT, wrap=False,
-          align=None, rich=False):
-    lb = QLabel(text)
-    lb.setFont(make_font(px, weight))
+def set_color(lb, color):
     lb.setStyleSheet(f"color:{color}; background:transparent;")
+
+
+class WrapLabel(QLabel):
+    """QLabel that never demands a wide minimum width when word-wrapping."""
+
+    def minimumSizeHint(self):
+        s = super().minimumSizeHint()
+        return QSize(min(s.width(), 40), s.height()) if self.wordWrap() else s
+
+
+def label(text="", px=24, weight=W_NORMAL, color=None, wrap=False, align=None, rich=False):
+    lb = WrapLabel(text)
+    lb.setFont(make_font(px, weight))
+    set_color(lb, color or T["text"])
     lb.setWordWrap(wrap)
     lb.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
     if align is not None:
@@ -1291,24 +1358,47 @@ def label(text="", px=24, weight=W_NORMAL, color=C_TEXT, wrap=False,
     return lb
 
 
-def set_color(lb, color):
-    lb.setStyleSheet(f"color:{color}; background:transparent;")
+def tone_color(tone):
+    return {"info": T["text2"], "good": T["green"], "bad": T["red"], "warn": T["amber"],
+            "card": T["purple"], "invest": T["blue"], "gold": T["gold"]}.get(tone, T["text"])
+
+
+def score_color(score):
+    if score >= 800:
+        return T["green"]
+    if score >= 700:
+        return T["lime"]
+    if score >= 600:
+        return T["gold"]
+    if score >= 450:
+        return T["amber"]
+    return T["red"]
+
+
+def restyle(w):
+    w.style().unpolish(w)
+    w.style().polish(w)
+    w.update()
 
 
 class FitLabel(QLabel):
     """Single-line label that shrinks its font until the text fits its width."""
 
-    def __init__(self, text="", px=32, weight=W_BOLD, color=C_TEXT, min_px=12,
-                 align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter):
+    def __init__(self, text="", px=32, weight=W_BOLD, color=None, min_px=12, align=AL_L):
         super().__init__()
         self._px, self._min, self._weight = px, min_px, weight
         self.setFont(make_font(px, weight))
         self.setAlignment(align)
         self.setTextFormat(Qt.TextFormat.PlainText)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.setFixedHeight(int(px * 1.35))
-        set_color(self, color)
+        self.setFixedHeight(int(px * 1.32))
+        set_color(self, color or T["text"])
         self.setText(text)
+
+    def setFixedWidth(self, w):
+        # an 'Ignored' policy breaks box layouts when combined with a fixed width
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        super().setFixedWidth(w)
 
     def setText(self, text):
         super().setText(text)
@@ -1319,7 +1409,7 @@ class FitLabel(QLabel):
         self._fit()
 
     def _fit(self):
-        avail = self.width() - 4
+        avail = self.width() - 4 - self.contentsMargins().left() - self.contentsMargins().right()
         if avail <= 0:
             return
         px = self._px
@@ -1331,18 +1421,40 @@ class FitLabel(QLabel):
             self.setFont(f)
 
 
+class Badge(FitLabel):
+    """Pill-shaped status label (like the '72% Used' pills)."""
+
+    def __init__(self, text="", px=20, height=44):
+        super().__init__(text, px, W_SEMI, align=AL_C)
+        self.setFixedHeight(height)
+        self._h = height
+        self.setContentsMargins(14, 0, 14, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.set_style(T["primary"], T["primary_text"])
+
+    def sizeHint(self):
+        fm = QFontMetrics(make_font(self._px, self._weight))
+        return QSize(fm.horizontalAdvance(self.text()) + 44, self._h)
+
+    def minimumSizeHint(self):
+        return QSize(min(self.sizeHint().width(), 80), self._h)
+
+    def set_style(self, bg, fg):
+        self.setStyleSheet(f"color:{fg}; background:{bg}; border-radius:{self._h // 2}px;")
+
+
 class WrapButton(QPushButton):
     """Push button whose text word-wraps and auto-shrinks to always fit inside."""
 
-    def __init__(self, text="", variant="slate", px=24, weight=W_SEMI, height=None):
+    def __init__(self, text="", variant="soft", px=24, weight=W_SEMI, height=None, pad=20):
         super().__init__()
         self.setProperty("variant", variant)
-        self._px, self._weight = px, weight
+        self._px, self._weight, self._pad = px, weight, pad
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 8, 18, 8)
-        self.lbl = QLabel()
+        lay.setContentsMargins(pad, 8, pad, 8)
+        self.lbl = WrapLabel()
         self.lbl.setWordWrap(True)
-        self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl.setAlignment(AL_C)
         self.lbl.setTextFormat(Qt.TextFormat.PlainText)
         self.lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.lbl.setFont(make_font(px, weight))
@@ -1365,20 +1477,20 @@ class WrapButton(QPushButton):
     def set_variant(self, v):
         if self.property("variant") != v:
             self.setProperty("variant", v)
-            self.style().unpolish(self)
-            self.style().polish(self)
+            restyle(self)
+            restyle(self.lbl)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._fit()
 
     def _fit(self):
-        w, h = self.width() - 36, self.height() - 16
+        w, h = self.width() - 2 * self._pad, self.height() - 16
         if w <= 0 or h <= 0:
             return
         px = self._px
         f = make_font(px, self._weight)
-        flags = int(Qt.TextFlag.TextWordWrap) | int(Qt.AlignmentFlag.AlignCenter)
+        flags = int(Qt.TextFlag.TextWordWrap) | int(AL_C)
         while px > 12:
             fm = QFontMetrics(f)
             r = fm.boundingRect(QRect(0, 0, w, 10000), flags, self._text)
@@ -1396,12 +1508,107 @@ class Card(QFrame):
         super().__init__()
         self.setObjectName(name)
 
+    def set_kind(self, name):
+        if self.objectName() != name:
+            self.setObjectName(name)
+            restyle(self)
+
+
+class IconButton(QPushButton):
+    """Round icon button with a hand-painted icon (menu, gear, close, book, sun, moon)."""
+
+    def __init__(self, kind, size=76, filled=True):
+        super().__init__()
+        self.kind, self.filled = kind, filled
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background:transparent; border:none;")
+
+    def enterEvent(self, e):
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        s = self.width()
+        hover = self.underMouse()
+        if self.filled:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(T["primary_hover"] if hover else T["primary"]))
+            fg = QColor(T["primary_text"])
+        else:
+            p.setPen(QPen(QColor(T["text"] if hover else T["border_strong"]), 2))
+            p.setBrush(QColor(T["card"]))
+            fg = QColor(T["text"])
+        p.drawEllipse(QRectF(1.5, 1.5, s - 3, s - 3))
+        pen = QPen(fg, max(2.0, s * 0.035), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        c = s / 2
+        k = self.kind
+        if k == "menu":
+            for dy in (-0.07, 0.07):
+                p.drawLine(QPointF(c - s * 0.16, c + s * dy), QPointF(c + s * 0.16, c + s * dy))
+        elif k == "close":
+            d = s * 0.14
+            p.drawLine(QPointF(c - d, c - d), QPointF(c + d, c + d))
+            p.drawLine(QPointF(c - d, c + d), QPointF(c + d, c - d))
+        elif k == "gear":
+            p.drawEllipse(QPointF(c, c), s * 0.085, s * 0.085)
+            p.drawEllipse(QPointF(c, c), s * 0.17, s * 0.17)
+            for i in range(8):
+                a = math.radians(i * 45)
+                p.drawLine(QPointF(c + math.cos(a) * s * 0.19, c + math.sin(a) * s * 0.19),
+                           QPointF(c + math.cos(a) * s * 0.25, c + math.sin(a) * s * 0.25))
+        elif k == "book":
+            w, h = s * 0.17, s * 0.2
+            p.drawRoundedRect(QRectF(c - w, c - h, w * 2, h * 2), 3, 3)
+            p.drawLine(QPointF(c, c - h), QPointF(c, c + h))
+        p.end()
+
+
+class SegmentBar(QWidget):
+    """Row of rounded segments, filled / dashed-empty (like the usage meters in the examples)."""
+
+    def __init__(self, segments=10, height=58):
+        super().__init__()
+        self.n, self.frac, self.color = segments, 0.0, T["seg_fill"]
+        self.setFixedHeight(height)
+
+    def set_value(self, frac, color):
+        self.frac, self.color = max(0.0, min(1.0, frac)), color
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        gap = 8
+        w = (self.width() - gap * (self.n - 1)) / self.n
+        h = self.height()
+        filled = math.ceil(self.frac * self.n - 1e-9) if self.frac > 0 else 0
+        for i in range(self.n):
+            r = QRectF(i * (w + gap) + 1, 1, w - 2, h - 2)
+            rad = min(w, h) * 0.42
+            if i < filled:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(self.color))
+            else:
+                p.setPen(QPen(QColor(T["border_strong"]), 2, Qt.PenStyle.DashLine))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r, rad, rad)
+        p.end()
+
 
 class CreditGauge(QWidget):
     def __init__(self):
         super().__init__()
-        self.score, self.tier, self.color = 550, "Poor", C_AMBER
-        self.setMinimumHeight(200)
+        self.score, self.tier, self.color = 550, "Poor", T["amber"]
+        self.setMinimumHeight(180)
 
     def set_score(self, score, tier, color):
         self.score, self.tier, self.color = score, tier, color
@@ -1411,130 +1618,98 @@ class CreditGauge(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        pen_w = 24
+        pen_w = max(18, int(min(w, h) * 0.11))
         r = min((w - pen_w * 2) / 2, (h - pen_w) / 1.52)
-        cx, cy = w / 2, pen_w / 2 + r + 6
+        cx, cy = w / 2, pen_w / 2 + r + 4
         rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-
-        pen = QPen(QColor("#1C263B"), pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        p.setPen(pen)
+        p.setPen(QPen(QColor(T["track"]), pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawArc(rect, 210 * 16, -240 * 16)
-
-        # tier markers
-        p.setPen(QPen(QColor("#33415F"), 3))
+        p.setPen(QPen(QColor(T["border_strong"]), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         for s in (300, 450, 600, 700, 800):
             ang = math.radians(210 - 240 * s / 1000)
-            r1, r2 = r - pen_w / 2 - 6, r - pen_w / 2 - 16
-            p.drawLine(int(cx + r1 * math.cos(ang)), int(cy - r1 * math.sin(ang)),
-                       int(cx + r2 * math.cos(ang)), int(cy - r2 * math.sin(ang)))
-
+            r1, r2 = r - pen_w / 2 - 8, r - pen_w / 2 - 18
+            p.drawLine(QPointF(cx + r1 * math.cos(ang), cy - r1 * math.sin(ang)),
+                       QPointF(cx + r2 * math.cos(ang), cy - r2 * math.sin(ang)))
         span = -240 * max(0.0, min(1.0, self.score / 1000))
         if span < 0:
             p.setPen(QPen(QColor(self.color), pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             p.drawArc(rect, 210 * 16, int(span * 16))
-
-        p.setPen(QColor(C_TEXT))
-        p.setFont(make_font(int(r * 0.52), W_BOLD))
-        p.drawText(QRectF(cx - r, cy - r * 0.55, 2 * r, r * 0.62), Qt.AlignmentFlag.AlignCenter, str(self.score))
+        p.setPen(QColor(T["text"]))
+        p.setFont(make_font(int(r * 0.56), W_BOLD))
+        p.drawText(QRectF(cx - r, cy - r * 0.58, 2 * r, r * 0.66), AL_C, str(self.score))
         p.setPen(QColor(self.color))
         p.setFont(make_font(int(r * 0.19), W_BOLD))
-        p.drawText(QRectF(cx - r, cy + r * 0.10, 2 * r, r * 0.30), Qt.AlignmentFlag.AlignCenter, self.tier.upper())
+        p.drawText(QRectF(cx - r, cy + r * 0.10, 2 * r, r * 0.30), AL_C, self.tier.upper())
         p.end()
-
-
-class MeterBar(QWidget):
-    def __init__(self, height=26):
-        super().__init__()
-        self.value, self.color = 0.0, C_GREEN
-        self.setFixedHeight(height)
-
-    def set_value(self, frac, color):
-        self.value, self.color = max(0.0, min(1.0, frac)), color
-        self.update()
-
-    def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(0, 0, self.width(), self.height())
-        rad = self.height() / 2
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#1C263B"))
-        p.drawRoundedRect(r, rad, rad)
-        if self.value > 0:
-            fw = max(self.height(), self.width() * self.value)
-            p.setBrush(QColor(self.color))
-            p.drawRoundedRect(QRectF(0, 0, fw, self.height()), rad, rad)
-        p.end()
-
-
-def score_color(score):
-    if score >= 800:
-        return C_GREEN
-    if score >= 700:
-        return "#84CC16"
-    if score >= 600:
-        return C_GOLD
-    if score >= 450:
-        return C_AMBER
-    return C_RED
 
 
 def build_stylesheet():
-    variants = {
-        # name: (top, bottom, hover_top, hover_bottom, text)
-        "green":  ("#22C55E", "#15803D", "#34D399", "#16A34A", "#FFFFFF"),
-        "blue":   ("#3B82F6", "#1D4ED8", "#60A5FA", "#2563EB", "#FFFFFF"),
-        "purple": ("#8B5CF6", "#6D28D9", "#A78BFA", "#7C3AED", "#FFFFFF"),
-        "amber":  ("#F59E0B", "#B45309", "#FBBF24", "#D97706", "#1A1100"),
-        "red":    ("#EF4444", "#B91C1C", "#F87171", "#DC2626", "#FFFFFF"),
-        "gold":   ("#FDE047", "#EAB308", "#FEF08A", "#FACC15", "#1A1300"),
-        "teal":   ("#14B8A6", "#0F766E", "#2DD4BF", "#0D9488", "#FFFFFF"),
-        "slate":  ("#273349", "#1E293D", "#334262", "#26334D", "#E5EBF5"),
-    }
+    t = T
     qss = [f"""
-    QWidget#root {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0C1528, stop:1 #060A14); }}
-    QFrame#card {{ background-color:{C_CARD}; border:1px solid {C_BORDER}; border-radius:26px; }}
-    QFrame#tile {{ background-color:#0F1626; border:1px solid {C_BORDER}; border-radius:20px; }}
-    QFrame#infobox {{ background-color:#0C1322; border:1px solid #2E3E62; border-radius:18px; }}
-    QFrame#modal {{ background-color:#131C30; border:2px solid #34466E; border-radius:30px; }}
-    QFrame#toast {{ background-color:#1B2540; border:2px solid {C_GOLD}; border-radius:22px; }}
-    QPushButton {{ border:none; border-radius:18px; }}
+    QWidget#root {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {t['bg_top']}, stop:1 {t['bg_bot']}); }}
+    QFrame#card {{ background-color:{t['card']}; border:1px solid {t['border']}; border-radius:36px; }}
+    QFrame#tile, QFrame#soft, QFrame#infobox {{ background-color:{t['surface']}; border:none; border-radius:28px; }}
+    QFrame#modal {{ background-color:{t['modal']}; border:1px solid {t['modal_border']}; border-radius:44px; }}
+    QFrame#segwrap {{ background-color:{t['surface']}; border:none; border-radius:38px; }}
+    QFrame#toast {{ background-color:{t['primary']}; border:none; border-radius:32px; }}
+    QPushButton {{ border:none; border-radius:26px; }}
     QPushButton QLabel {{ background:transparent; }}
-    QPushButton QLabel:disabled {{ color:#4E5A73; }}
-    QSpinBox {{ background-color:#0C1322; color:{C_TEXT}; border:2px solid #2E3E62; border-radius:16px;
-               padding:0px 6px; selection-background-color:{C_PURPLE}; }}
+
+    QPushButton[variant="primary"] {{ background:{t['primary']}; }}
+    QPushButton[variant="primary"]:hover {{ background:{t['primary_hover']}; }}
+    QPushButton[variant="primary"]:disabled {{ background:{t['disabled_bg']}; }}
+    QPushButton[variant="primary"] QLabel {{ color:{t['primary_text']}; }}
+
+    QPushButton[variant="outline"] {{ background:transparent; border:2px solid {t['border_strong']}; }}
+    QPushButton[variant="outline"]:hover {{ border-color:{t['text']}; }}
+    QPushButton[variant="outline"] QLabel {{ color:{t['text']}; }}
+
+    QPushButton[variant="soft"], QPushButton[variant="chip"] {{ background:{t['surface']}; border:2px solid transparent; }}
+    QPushButton[variant="soft"]:hover, QPushButton[variant="chip"]:hover {{ border-color:{t['border_strong']}; }}
+    QPushButton[variant="soft"] QLabel, QPushButton[variant="chip"] QLabel {{ color:{t['text']}; }}
+
+    QPushButton[variant="seg"] {{ background:transparent; border-radius:32px; }}
+    QPushButton[variant="seg"]:hover {{ background:{t['card']}; }}
+    QPushButton[variant="seg"] QLabel {{ color:{t['muted']}; }}
+    QPushButton[variant="segon"] {{ background:{t['primary']}; border-radius:32px; }}
+    QPushButton[variant="segon"] QLabel {{ color:{t['primary_text']}; }}
+
+    QPushButton[variant="solid_green"] {{ background:{t['green']}; }}
+    QPushButton[variant="solid_green"]:hover {{ border:3px solid {t['text']}; }}
+    QPushButton[variant="solid_green"] QLabel {{ color:{'#FFFFFF' if t['primary'] == '#111317' else '#06210F'}; }}
+
+    QSpinBox {{ background-color:{t['surface']}; color:{t['text']}; border:2px solid transparent; border-radius:26px;
+               padding:0px 6px; selection-background-color:{t['blue']}; }}
+    QSpinBox:focus {{ border-color:{t['text']}; }}
     QSpinBox::up-button, QSpinBox::down-button {{ width:0px; border:none; }}
     QSpinBox::up-arrow, QSpinBox::down-arrow {{ width:0px; height:0px; }}
-    QSpinBox:focus {{ border-color:{C_PURPLE}; }}
-    QCheckBox {{ color:#C9D3E6; spacing:14px; background:transparent; }}
-    QCheckBox::indicator {{ width:30px; height:30px; border-radius:9px; border:2px solid #3A4A6E; background:#0C1322; }}
-    QCheckBox::indicator:checked {{ background:{C_PURPLE}; border-color:#A78BFA; }}
+    QCheckBox {{ color:{t['text2']}; spacing:14px; background:transparent; }}
+    QCheckBox::indicator {{ width:30px; height:30px; border-radius:10px; border:2px solid {t['border_strong']};
+                            background:{t['card']}; }}
+    QCheckBox::indicator:checked {{ background:{t['primary']}; border-color:{t['primary']}; }}
     QScrollArea {{ background:transparent; border:none; }}
     QScrollArea > QWidget > QWidget {{ background:transparent; }}
     QScrollBar:vertical {{ width:12px; background:transparent; margin:4px; }}
-    QScrollBar::handle:vertical {{ background:#2E3E62; border-radius:4px; min-height:50px; }}
+    QScrollBar::handle:vertical {{ background:{t['border_strong']}; border-radius:4px; min-height:50px; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background:transparent; }}
-    QToolTip {{ background:#1B2540; color:{C_TEXT}; border:1px solid #34466E; padding:6px; }}
+    QToolTip {{ background:{t['card']}; color:{t['text']}; border:1px solid {t['border']}; padding:6px; }}
     """]
-    for name, (t, b, ht, hb, txt) in variants.items():
+    for name, (bg, hov, fg) in t["tints"].items():
         qss.append(f"""
-        QPushButton[variant="{name}"] {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {t}, stop:1 {b}); }}
-        QPushButton[variant="{name}"]:hover {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {ht}, stop:1 {hb});
-                                               border:2px solid rgba(255,255,255,0.55); }}
-        QPushButton[variant="{name}"]:pressed {{ background:{b}; }}
-        QPushButton[variant="{name}"]:disabled {{ background:#151D2F; border:1px solid #1F2A42; }}
-        QPushButton[variant="{name}"] QLabel {{ color:{txt}; }}
-        QPushButton[variant="{name}"] QLabel:disabled {{ color:#4E5A73; }}
+        QFrame#tint_{name} {{ background-color:{bg}; border:none; border-radius:30px; }}
+        QPushButton[variant="{name}"] {{ background:{bg}; }}
+        QPushButton[variant="{name}"]:hover {{ background:{hov}; }}
+        QPushButton[variant="{name}"] QLabel {{ color:{fg}; }}
         """)
+    # disabled state last so it wins
     qss.append(f"""
-    QPushButton[variant="chip"] {{ background:#172036; border:2px solid #2C3A58; border-radius:14px; }}
-    QPushButton[variant="chip"]:hover {{ border-color:{C_PURPLE}; }}
-    QPushButton[variant="chip"] QLabel {{ color:#C9D3E6; }}
-    QPushButton[variant="ghost"] {{ background:transparent; border:2px solid #34466E; border-radius:14px; }}
-    QPushButton[variant="ghost"]:hover {{ border-color:{C_GOLD}; }}
-    QPushButton[variant="ghost"] QLabel {{ color:{C_GOLD}; }}
+    QPushButton:disabled {{ background:{t['disabled_bg']}; border:2px solid transparent; }}
+    QPushButton QLabel:disabled {{ color:{t['disabled_text']}; }}
     """)
+    for name in list(t["tints"]) + ["primary", "outline", "soft", "chip", "solid_green"]:
+        qss.append(f'QPushButton[variant="{name}"]:disabled {{ background:{t["disabled_bg"]}; border:2px solid transparent; }}'
+                   f'QPushButton[variant="{name}"] QLabel:disabled {{ color:{t["disabled_text"]}; }}')
     return "\n".join(qss)
 
 
@@ -1542,11 +1717,11 @@ def build_stylesheet():
 class Overlay(QWidget):
     """Full-canvas dimmed layer with a centred modal card."""
 
-    def __init__(self, parent, width=960):
+    def __init__(self, parent, width):
         super().__init__(parent)
-        self.setGeometry(0, 0, VW, VH)
+        self.setGeometry(0, 0, parent.width(), parent.height())
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(40, 60, 40, 60)
+        outer.setContentsMargins(40, 40, 40, 40)
         outer.addStretch(1)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -1557,13 +1732,13 @@ class Overlay(QWidget):
         outer.addLayout(row)
         outer.addStretch(1)
         self.body = QVBoxLayout(self.modal)
-        self.body.setContentsMargins(44, 40, 44, 40)
+        self.body.setContentsMargins(48, 42, 48, 42)
         self.body.setSpacing(20)
         self.hide()
 
     def paintEvent(self, e):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(3, 6, 14, 215))
+        p.fillRect(self.rect(), QColor(*T["overlay"]))
         p.end()
 
     def mousePressEvent(self, e):
@@ -1576,16 +1751,21 @@ class Overlay(QWidget):
                 w = item.widget()
                 if w is not None:
                     w.hide()
-                    w.setParent(None)        # detach now so nothing old is painted
+                    w.setParent(None)               # detach now so nothing old is painted
                     w.deleteLater()
                 elif item.layout():
                     wipe(item.layout())
         wipe(self.body)
 
 
+TONE_VARIANT = {"cash": "green", "card": "purple", "loan": "amber", "bad": "red",
+                "good": "teal", "info": "blue", "skip": "slate"}
+
+
 class EventOverlay(Overlay):
-    def __init__(self, parent, on_choose):
-        super().__init__(parent)
+    def __init__(self, parent, on_choose, desktop):
+        super().__init__(parent, 1280 if desktop else 970)
+        self.desktop = desktop
         self.on_choose = on_choose
         self.key = None
 
@@ -1596,53 +1776,73 @@ class EventOverlay(Overlay):
         self.key = ev
         self.clear()
         b = self.body
-        b.addWidget(label(f"QUARTERLY EVENT  ·  AGE {g.age_years}  ·  Q{g.quarter()}", 22, W_BOLD, C_GOLD,
-                          align=Qt.AlignmentFlag.AlignCenter))
-        b.addWidget(label(ev["title"], 50, W_BOLD, C_TEXT, wrap=True, align=Qt.AlignmentFlag.AlignCenter))
-        b.addWidget(label(ev["desc"], 28, W_NORMAL, "#B7C2D8", wrap=True, align=Qt.AlignmentFlag.AlignCenter))
+        top = QHBoxLayout()
+        top.addWidget(Badge(f"Quarterly event  ·  Age {g.age_years}  ·  Q{g.quarter()}", 20, 44), 0)
+        top.addStretch(1)
+        b.addLayout(top)
+        b.addWidget(label(ev["title"], 54, W_BOLD, wrap=True))
+        b.addWidget(label(ev["desc"], 28, W_NORMAL, T["text2"], wrap=True))
         if ev.get("info"):
             box = Card("infobox")
             bl = QVBoxLayout(box)
-            bl.setContentsMargins(26, 20, 26, 20)
-            bl.addWidget(label("WHY IT MATTERS", 19, W_BOLD, C_GOLD))
-            bl.addWidget(label(ev["info"], 23, W_NORMAL, "#C9D3E6", wrap=True))
+            bl.setContentsMargins(28, 20, 28, 22)
+            bl.setSpacing(6)
+            bl.addWidget(label("Why it matters", 22, W_BOLD))
+            bl.addWidget(label(ev["info"], 23, W_NORMAL, T["text2"], wrap=True))
             b.addWidget(box)
+        stats = QHBoxLayout()
+        stats.setSpacing(10)
+        for txt in (f"Cash {money(g.cash)}", f"Card credit {money(g.card_available())}",
+                    f"Happiness {g.happiness}", f"Credit {g.credit_score}"):
+            chip = FitLabel(txt, 20, W_SEMI, T["text2"], align=AL_C)
+            chip.setFixedHeight(44)
+            chip.setStyleSheet(f"color:{T['text2']}; background:{T['surface']}; border-radius:22px;")
+            stats.addWidget(chip)
+        b.addLayout(stats)
+        b.addSpacing(4)
 
-        status = (f"Cash {money(g.cash)}   ·   Card credit left {money(g.card_available())}   ·   "
-                  f"Happiness {g.happiness}   ·   Credit {g.credit_score}")
-        b.addWidget(label(status, 21, W_SEMI, C_MUTED, wrap=True, align=Qt.AlignmentFlag.AlignCenter))
-        b.addSpacing(6)
-
-        tone_variant = {"cash": "green", "card": "purple", "loan": "amber", "bad": "red",
-                        "good": "teal", "info": "blue", "skip": "slate"}
-        for i, o in enumerate(ev["options"]):
+        grid = QGridLayout()
+        grid.setSpacing(14)
+        opts = ev["options"]
+        cols = 2 if self.desktop and len(opts) >= 3 else 1
+        for i, o in enumerate(opts):
             reason = g.option_block_reason(o)
             text = o["label"] + (f"\n(unavailable: {reason})" if reason else "")
-            btn = WrapButton(text, tone_variant.get(o["tone"], "slate"), 26, W_SEMI, height=104)
+            btn = WrapButton(text, TONE_VARIANT.get(o["tone"], "slate"), 26, W_SEMI,
+                             height=112 if self.desktop else 104)
             btn.setEnabled(reason is None)
             btn.clicked.connect(lambda _=False, idx=i: self.on_choose(idx))
-            b.addWidget(btn)
+            span = 2 if cols == 2 and i == len(opts) - 1 and len(opts) % 2 else 1
+            grid.addWidget(btn, i // cols, i % cols, 1, span)
+        b.addLayout(grid)
         self.show()
         self.raise_()
 
 
 class PopupOverlay(Overlay):
-    KIND_COLORS = {"warning": C_RED, "success": C_GREEN, "info": C_BLUE, "gold": C_GOLD}
+    KIND_TINT = {"warning": "red", "success": "green", "info": "blue", "gold": "amber"}
 
-    def __init__(self, parent, on_close):
-        super().__init__(parent, width=980)
+    def __init__(self, parent, on_close, desktop):
+        super().__init__(parent, 1200 if desktop else 980)
+        self.width_ = 1200 if desktop else 980
+        self.max_h = 600 if desktop else 1160
         self.on_close = on_close
 
     def show_popup(self, title, body_html, kind="info", buttons=None):
         self.clear()
         b = self.body
-        stripe = QFrame()
-        stripe.setFixedHeight(8)
-        stripe.setStyleSheet(f"background:{self.KIND_COLORS.get(kind, C_BLUE)}; border-radius:4px;")
-        b.addWidget(stripe)
-        b.addWidget(label(title, 46, W_BOLD, C_TEXT, wrap=True, align=Qt.AlignmentFlag.AlignCenter))
+        top = QHBoxLayout()
+        tint = self.KIND_TINT.get(kind, "blue")
+        bg, _, fg = T["tints"][tint]
+        badge = Badge({"warning": "Heads up", "success": "Nice work", "gold": "Guide"}.get(kind, "Info"), 20, 44)
+        badge.set_style(bg, fg)
+        badge.setFixedWidth(160)
+        top.addWidget(badge)
+        top.addStretch(1)
+        b.addLayout(top)
+        b.addWidget(label(title, 50, W_BOLD, wrap=True))
 
-        body = label(body_html, 25, W_NORMAL, "#D3DBEA", wrap=True, rich=True)
+        body = label(body_html, 25, W_NORMAL, T["text2"], wrap=True, rich=True)
         body.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         holder = QWidget()
         hl = QVBoxLayout(holder)
@@ -1652,14 +1852,14 @@ class PopupOverlay(Overlay):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(holder)
-        need = body.heightForWidth(980 - 88 - 30) + 36
-        scroll.setFixedHeight(max(120, min(1180, need)))
+        need = body.heightForWidth(self.width_ - 96 - 30) + 64
+        scroll.setFixedHeight(max(110, min(self.max_h, need)))
         b.addWidget(scroll)
 
         row = QHBoxLayout()
-        row.setSpacing(16)
-        for text, variant, cb in (buttons or [("Got it", "gold", None)]):
-            btn = WrapButton(text, variant, 28, W_BOLD, height=96)
+        row.setSpacing(14)
+        for text, variant, cb in (buttons or [("Got it", "primary", None)]):
+            btn = WrapButton(text, variant, 27, W_SEMI, height=92)
             btn.setEnabled(cb is not False)
             btn.clicked.connect(lambda _=False, c=cb: self._clicked(c))
             row.addWidget(btn)
@@ -1674,14 +1874,90 @@ class PopupOverlay(Overlay):
         self.on_close()
 
 
+class SettingsOverlay(Overlay):
+    def __init__(self, parent, ui, desktop):
+        super().__init__(parent, 1000 if desktop else 960)
+        self.ui = ui
+
+    def _segmented(self, options, current, on_pick):
+        wrap = Card("segwrap")
+        wrap.setFixedHeight(88)
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
+        for text, value in options:
+            btn = WrapButton(text, "segon" if value == current else "seg", 25, W_SEMI, height=72)
+            btn.clicked.connect(lambda _=False, v=value: on_pick(v))
+            lay.addWidget(btn)
+        return wrap
+
+    def open(self):
+        self.clear()
+        ui, win = self.ui, self.ui.win
+        b = self.body
+        b.setSpacing(16)
+        top = QHBoxLayout()
+        top.addWidget(label("Settings", 58, W_BOLD))
+        top.addStretch(1)
+        close = IconButton("close", 76, filled=False)
+        close.clicked.connect(self.close_)
+        top.addWidget(close)
+        b.addLayout(top)
+
+        def section(title, hint=None):
+            b.addSpacing(8)
+            b.addWidget(label(title, 26, W_BOLD))
+            if hint:
+                b.addWidget(label(hint, 21, W_NORMAL, T["muted"], wrap=True))
+
+        section("Appearance")
+        b.addWidget(self._segmented([("Light", "light"), ("Dark", "dark")], win.settings["theme"], win.set_theme))
+        section("Layout", "Mobile is a vertical 9:16 screen, desktop a horizontal 16:9 screen. Either one scales "
+                          "to fit any window or monitor, with bars filling any leftover space.")
+        b.addWidget(self._segmented([("Mobile  ·  vertical", "mobile"), ("Desktop  ·  horizontal", "desktop")],
+                                    win.settings["layout"], win.set_layout))
+        section("Display")
+        fs = WrapButton("Exit fullscreen  (F11)" if win.isFullScreen() else "Enter fullscreen  (F11)",
+                        "soft", 25, W_SEMI, height=84)
+        fs.clicked.connect(lambda: (win.toggle_fullscreen(), self.open()))
+        b.addWidget(fs)
+
+        section("Game", "Progress saves automatically after every move, and when you close the window.")
+        guide = WrapButton("Credit 101 guide", "soft", 25, W_SEMI, height=84)
+        guide.clicked.connect(lambda: (self.hide(), ui.show_guide()))
+        b.addWidget(guide)
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        if win.page == "game" and ui.game.state in ("main", "event"):
+            menu = WrapButton("Save & main menu", "outline", 25, W_SEMI, height=84)
+            menu.clicked.connect(lambda: (self.hide(), ui.to_menu()))
+            row.addWidget(menu)
+            quit_ = WrapButton("Save & quit", "primary", 25, W_SEMI, height=84)
+        else:
+            quit_ = WrapButton("Quit game", "primary", 25, W_SEMI, height=84)
+        quit_.clicked.connect(win.close)
+        row.addWidget(quit_)
+        b.addLayout(row)
+        self.show()
+        self.raise_()
+
+    def close_(self):
+        self.hide()
+        self.ui.after_overlay()
+
+
 class Toast(QFrame):
     def __init__(self, parent):
         super().__init__(parent)
         self.setObjectName("toast")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(28, 18, 28, 18)
-        self.lbl = label("", 25, W_SEMI, C_TEXT, wrap=True, align=Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self.lbl)
+        lay.setContentsMargins(30, 18, 30, 18)
+        lay.setSpacing(16)
+        self.dot = QLabel()
+        self.dot.setFixedSize(16, 16)
+        lay.addWidget(self.dot)
+        self.lbl = label("", 24, W_SEMI, T["primary_text"], wrap=True)
+        lay.addWidget(self.lbl, 1)
         self.queue = []
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
@@ -1698,12 +1974,13 @@ class Toast(QFrame):
             self.hide()
             return
         text, tone = self.queue.pop(0)
-        color = TONE_COLORS.get(tone, C_GOLD)
-        self.setStyleSheet(f"QFrame#toast {{ background-color:#1B2540; border:2px solid {color}; border-radius:22px; }}")
+        dot = {"bad": "#F87171", "good": "#4ADE80", "gold": "#FACC15"}.get(tone, "#818CF8")
+        self.dot.setStyleSheet(f"background:{dot}; border-radius:8px;")
         self.lbl.setText(text)
-        w = 900
-        h = self.lbl.heightForWidth(w - 56) + 40
-        self.setGeometry((VW - w) // 2, 26, w, max(80, h))
+        pw = self.parentWidget().width()
+        w = min(900, pw - 80)
+        h = self.lbl.heightForWidth(w - 92) + 40
+        self.setGeometry((pw - w) // 2, 28, w, max(80, h))
         self.show()
         self.raise_()
         self.timer.start(2800)
@@ -1714,184 +1991,358 @@ class Toast(QFrame):
 
 
 # --------------------------------------------------------------------- pages --
+def hero_html(light, bold, px):
+    return (f"<span style='font-weight:300'>{esc(light)} </span>"
+            f"<span style='font-weight:700'>{esc(bold)}</span>")
+
+
 class StartPage(QWidget):
-    def __init__(self, on_start, on_guide):
+    def __init__(self, ui, desktop):
         super().__init__()
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(56, 90, 56, 80)
-        lay.setSpacing(26)
-        lay.addWidget(label("FINANCIAL ODYSSEY", 74, W_BOLD, C_GOLD, align=Qt.AlignmentFlag.AlignCenter, wrap=True))
-        lay.addWidget(label("Ages 18 to 65  ·  one quarter at a time", 32, W_MED, C_MUTED,
-                            align=Qt.AlignmentFlag.AlignCenter, wrap=True))
-        card = Card()
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(44, 40, 44, 40)
-        cl.setSpacing(24)
-        cl.addWidget(label("Happy 18th birthday!", 44, W_BOLD, C_TEXT, wrap=True))
-        cl.addWidget(label("Your first credit card was just approved. Earn, spend, borrow and invest your way "
-                           "to retirement — without going broke, burning out or wrecking your credit.",
-                           30, W_NORMAL, "#B7C2D8", wrap=True))
-        rules = [
-            ("1 turn = 3 months.", "Each quarter you're paid, compulsory rent, groceries & bills are taken, and a life event happens."),
-            ("Happiness drains every quarter.", "Buy leisure to refill it. At 0 for a full year you die of depression."),
+        self.ui = ui
+        g, win = ui.game, ui.win
+        has_save = win.has_save
+
+        top = QHBoxLayout()
+        logo = Badge("FO", 24, 64)
+        logo.setFixedWidth(64)
+        top.addWidget(logo)
+        top.addWidget(label("Financial Odyssey", 26, W_SEMI))
+        top.addStretch(1)
+        gear = IconButton("gear", 76, filled=False)
+        gear.clicked.connect(ui.open_settings)
+        top.addWidget(gear)
+
+        hero = label("<span style='font-weight:300'>Earn, spend and </span><b>borrow</b>"
+                     "<span style='font-weight:300'> your way from </span><b>18 to 65</b>",
+                     96 if desktop else 88, W_NORMAL, wrap=True, rich=True)
+        sub = label("Your first credit card was just approved. Build your credit, keep your happiness up "
+                    "and retire without going broke.", 30, W_NORMAL, T["muted"], wrap=True)
+        chips = QHBoxLayout()
+        chips.setSpacing(10)
+        for txt, sel in (("1 turn = 3 months", True), ("Credit", False), ("Cash", False), ("Happiness", False)):
+            c = Badge(txt, 22, 58)
+            if not sel:
+                c.set_style(T["surface"], T["text"])
+            chips.addWidget(c, 2 if sel else 1)
+
+        rules = Card("card")
+        rl = QVBoxLayout(rules)
+        rl.setContentsMargins(40, 34, 40, 36)
+        rl.setSpacing(18)
+        rl.addWidget(label("How it works", 36, W_BOLD))
+        for head, text in [
             ("Bills come due.", "Card and loan balances post a minimum payment. Pay it before advancing to grow your credit."),
-            ("Credit = cheaper money.", "Higher scores unlock lower interest, bigger limits and loans. Capped at 700 for your first 5 years."),
-            ("Costs rise faster than pay.", "Inflation outpaces raises, so certifications and investing matter."),
-            ("Hit $1,000,000 net worth", "and you may retire early. Otherwise you retire at 65."),
-        ]
-        for head, text in rules:
-            cl.addWidget(label(f"<b style='color:{C_GOLD}'>{esc(head)}</b> {esc(text)}", 28, W_NORMAL, "#D3DBEA",
-                               wrap=True, rich=True))
-        lay.addWidget(card)
-        lay.addStretch(1)
-        guide = WrapButton("Credit 101 — how credit scores work", "ghost", 30, W_BOLD, height=96)
-        guide.clicked.connect(on_guide)
-        lay.addWidget(guide)
-        start = WrapButton("BEGIN YOUR JOURNEY", "gold", 46, W_BOLD, height=140)
-        start.clicked.connect(on_start)
-        lay.addWidget(start)
+            ("Happiness drains.", "Buy leisure to refill it. At 0 for a full year you die of depression."),
+            ("Credit = cheaper money.", "Higher scores unlock lower interest, bigger limits and loans (capped at 700 for 5 years)."),
+            ("Costs rise faster than pay.", "Rent, groceries and bills are compulsory, so certifications and investing matter."),
+            ("$1,000,000 net worth", "lets you retire early. Otherwise you retire at 65."),
+        ]:
+            rl.addWidget(label(f"<b>{esc(head)}</b> <span style='color:{T['muted']}'>{esc(text)}</span>",
+                               25, W_NORMAL, wrap=True, rich=True))
+
+        guide = WrapButton("Credit 101 — how credit scores work", "outline", 27, W_SEMI, height=92)
+        guide.clicked.connect(ui.show_guide)
+
+        buttons = QVBoxLayout()
+        buttons.setSpacing(16)
+        save_card = None
+        if has_save:
+            sc = Card("tint_blue")
+            sl = QVBoxLayout(sc)
+            sl.setContentsMargins(36, 28, 36, 30)
+            sl.setSpacing(6)
+            fg = T["tints"]["blue"][2]
+            sl.addWidget(label("Saved game", 24, W_SEMI, fg))
+            sl.addWidget(label(hero_html("Age", f"{g.age_years}  ·  Q{g.quarter()}", 60), 60, W_NORMAL, fg, rich=True))
+            sl.addWidget(FitLabel(f"Net worth {money(g.get_net_worth())}   ·   Credit {g.credit_score}   ·   "
+                                  f"Happiness {g.happiness}", 24, W_MED, fg))
+            sl.addSpacing(10)
+            resume = WrapButton("Resume journey", "primary", 34, W_BOLD, height=112)
+            resume.clicked.connect(ui.resume)
+            sl.addWidget(resume)
+            save_card = sc
+            new = WrapButton("Start a new credit card", "outline", 27, W_SEMI, height=92)
+            new.clicked.connect(ui.confirm_new_game)
+            buttons.addWidget(new)
+        else:
+            begin = WrapButton("Begin your journey", "primary", 40, W_BOLD, height=128)
+            begin.clicked.connect(ui.new_game)
+            buttons.addWidget(begin)
+        buttons.addWidget(guide)
+
+        if desktop:
+            lay = QHBoxLayout(self)
+            lay.setContentsMargins(80, 56, 80, 64)
+            lay.setSpacing(64)
+            left = QVBoxLayout()
+            left.setSpacing(26)
+            left.addLayout(top)
+            left.addSpacing(24)
+            left.addWidget(hero)
+            left.addWidget(sub)
+            left.addLayout(chips)
+            left.addStretch(1)
+            left.addLayout(buttons)
+            lay.addLayout(left, 1)
+            right = QVBoxLayout()
+            right.setSpacing(20)
+            right.addWidget(rules)
+            right.addStretch(1)
+            if save_card is not None:
+                right.addWidget(save_card)
+            lay.addLayout(right, 1)
+        else:
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(56, 48, 56, 60)
+            lay.setSpacing(26)
+            lay.addLayout(top)
+            lay.addSpacing(20)
+            lay.addWidget(hero)
+            lay.addWidget(sub)
+            lay.addLayout(chips)
+            lay.addWidget(rules)
+            lay.addStretch(1)
+            if save_card is not None:
+                lay.addWidget(save_card)
+            lay.addLayout(buttons)
 
 
 class Tile(Card):
     def __init__(self, caption):
         super().__init__("tile")
-        self.setFixedHeight(132)
+        self.setFixedHeight(126)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 14, 22, 14)
+        lay.setContentsMargins(24, 12, 24, 12)
         lay.setSpacing(2)
-        self.cap = FitLabel(caption, 19, W_BOLD, C_MUTED)
-        self.val = FitLabel("", 40, W_BOLD, C_TEXT)
-        self.sub = FitLabel("", 19, W_MED, C_MUTED)
+        self.cap = FitLabel(caption, 20, W_MED, T["muted"])
+        self.val = FitLabel("", 40, W_BOLD)
+        self.sub = FitLabel("", 18, W_MED, T["muted"])
         lay.addWidget(self.cap)
         lay.addWidget(self.val)
         lay.addWidget(self.sub)
 
-    def set(self, value, color, sub, sub_color=C_MUTED):
+    def set(self, value, color, sub, sub_color=None):
         self.val.setText(value)
         set_color(self.val, color)
         self.sub.setText(sub)
-        set_color(self.sub, sub_color)
+        set_color(self.sub, sub_color or T["muted"])
 
 
 class Dashboard(QWidget):
-    def __init__(self, ui):
+    def __init__(self, ui, desktop):
         super().__init__()
         self.ui = ui
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(36, 30, 36, 30)
-        lay.setSpacing(16)
+        self.desktop = desktop
+        header = self._header()
+        credit = self._credit_card()
+        happy = self._happy_card()
+        tiles = self._tiles()
+        bills = self._bills()
+        actions = self._actions()
+        log = self._log()
+        bottom = self._bottom()
 
-        # --- header -----------------------------------------------------------
-        hdr = Card()
-        hdr.setFixedHeight(150)
-        hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(34, 18, 34, 18)
+        if desktop:
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(40, 28, 40, 32)
+            lay.setSpacing(20)
+            lay.addWidget(header)
+            cols = QHBoxLayout()
+            cols.setSpacing(20)
+            a = QVBoxLayout()
+            a.setSpacing(18)
+            a.addWidget(credit, 1)
+            a.addWidget(happy)
+            cols.addLayout(a, 0)
+            credit.setFixedWidth(520)
+            happy.setFixedWidth(520)
+            bcol = QVBoxLayout()
+            bcol.setSpacing(18)
+            bcol.addLayout(tiles)
+            bcol.addWidget(bills)
+            bcol.addWidget(actions)
+            bcol.addStretch(1)
+            cols.addLayout(bcol, 1)
+            c = QVBoxLayout()
+            c.setSpacing(18)
+            c.addWidget(log, 1)
+            c.addLayout(bottom)
+            wrap = QWidget()
+            wrap.setFixedWidth(500)
+            wrap.setLayout(c)
+            c.setContentsMargins(0, 0, 0, 0)
+            cols.addWidget(wrap)
+            lay.addLayout(cols, 1)
+        else:
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(36, 30, 36, 30)
+            lay.setSpacing(16)
+            lay.addWidget(header)
+            row = QHBoxLayout()
+            row.setSpacing(16)
+            row.addWidget(credit, 1)
+            row.addWidget(happy, 1)
+            lay.addLayout(row)
+            lay.addLayout(tiles)
+            lay.addWidget(bills)
+            lay.addWidget(actions)
+            lay.addWidget(log, 1)
+            lay.addLayout(bottom)
+
+    # ------------------------------------------------------------- sections --
+    def _header(self):
+        ui = self.ui
+        if self.desktop:
+            w = QWidget()
+            w.setFixedHeight(104)
+        else:
+            w = Card("card")
+            w.setFixedHeight(168)
+        hl = QHBoxLayout(w)
+        hl.setContentsMargins(0, 0, 0, 0) if self.desktop else hl.setContentsMargins(26, 18, 34, 18)
+        hl.setSpacing(22)
+        menu = IconButton("menu", 84 if self.desktop else 80)
+        menu.clicked.connect(ui.open_settings)
+        hl.addWidget(menu)
         left = QVBoxLayout()
         left.setSpacing(0)
-        self.age_lbl = FitLabel("", 56, W_BOLD, C_GOLD)
-        self.sub_lbl = FitLabel("", 22, W_MED, C_MUTED)
+        self.age_lbl = label("", 56, W_NORMAL, rich=True)
+        self.age_lbl.setFixedHeight(72)
+        self.sub_lbl = FitLabel("", 22, W_MED, T["muted"])
         left.addWidget(self.age_lbl)
         left.addWidget(self.sub_lbl)
+        hl.addLayout(left, 1)
+        if self.desktop:
+            guide = WrapButton("Credit 101", "outline", 24, W_SEMI, height=72)
+            guide.setFixedWidth(200)
+            guide.clicked.connect(ui.show_guide)
+            hl.addWidget(guide)
+            hl.addSpacing(10)
         right = QVBoxLayout()
         right.setSpacing(0)
-        ar = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        self.nw_cap = FitLabel("NET WORTH", 22, W_BOLD, C_MUTED, align=ar)
-        self.nw_lbl = FitLabel("", 54, W_BOLD, C_GREEN, align=ar)
+        self.nw_cap = FitLabel("Net worth", 22, W_MED, T["muted"], align=AL_R)
+        self.nw_lbl = FitLabel("", 56, W_BOLD, align=AL_R)
         right.addWidget(self.nw_cap)
         right.addWidget(self.nw_lbl)
-        hl.addLayout(left, 1)
-        hl.addLayout(right, 1)
-        lay.addWidget(hdr)
+        rw = QWidget()
+        rw.setLayout(right)
+        rw.setFixedWidth(420 if self.desktop else 380)
+        right.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(rw)
+        return w
 
-        # --- credit + happiness -------------------------------------------------
-        row = QHBoxLayout()
-        row.setSpacing(16)
-        cc = Card()
-        cc.setFixedHeight(372)
+    def _credit_card(self):
+        cc = Card("card")
+        if not self.desktop:
+            cc.setFixedHeight(404)
         cl = QVBoxLayout(cc)
-        cl.setContentsMargins(26, 18, 26, 18)
-        cl.setSpacing(6)
+        cl.setContentsMargins(30, 24, 30, 22)
+        cl.setSpacing(8)
         top = QHBoxLayout()
-        top.addWidget(label("CREDIT SCORE", 22, W_BOLD, C_MUTED))
+        top.addWidget(label("Credit score", 30, W_BOLD))
         top.addStretch(1)
-        gbtn = WrapButton("Guide", "ghost", 20, W_BOLD, height=44)
-        gbtn.setFixedWidth(110)
-        gbtn.clicked.connect(ui.show_guide)
-        top.addWidget(gbtn)
+        if not self.desktop:
+            g = WrapButton("Guide", "outline", 20, W_SEMI, height=52)
+            g.setFixedWidth(112)
+            g.clicked.connect(self.ui.show_guide)
+            top.addWidget(g)
+        else:
+            self.tier_badge = Badge("", 20, 44)
+            self.tier_badge.setFixedWidth(170)
+            top.addWidget(self.tier_badge)
         cl.addLayout(top)
         self.gauge = CreditGauge()
-        self.gauge.setFixedHeight(196)
-        cl.addWidget(self.gauge)
-        self.rates_lbl = FitLabel("", 21, W_SEMI, "#C9D3E6", align=Qt.AlignmentFlag.AlignCenter)
+        if self.desktop:
+            cl.addWidget(self.gauge, 1)
+        else:
+            self.gauge.setFixedHeight(196)
+            cl.addWidget(self.gauge)
+        self.rates_lbl = FitLabel("", 21, W_SEMI, T["text2"], align=AL_C)
         cl.addWidget(self.rates_lbl)
-        self.credit_note = label("", 19, W_MED, C_MUTED, wrap=True, align=Qt.AlignmentFlag.AlignCenter)
+        self.credit_note = label("", 19, W_MED, T["muted"], wrap=True, align=AL_C)
         cl.addWidget(self.credit_note)
-        cl.addStretch(1)
-        row.addWidget(cc, 1)
+        if not self.desktop:
+            cl.addStretch(1)
+        return cc
 
-        hc = Card()
-        hc.setFixedHeight(372)
-        hcl = QVBoxLayout(hc)
-        hcl.setContentsMargins(26, 18, 26, 20)
-        hcl.setSpacing(8)
-        hcl.addWidget(label("HAPPINESS", 22, W_BOLD, C_MUTED))
-        self.happy_val = FitLabel("", 66, W_BOLD, C_GREEN)
-        hcl.addWidget(self.happy_val)
-        self.happy_bar = MeterBar(26)
-        hcl.addWidget(self.happy_bar)
-        self.happy_note = label("", 20, W_MED, C_MUTED, wrap=True)
-        hcl.addWidget(self.happy_note)
-        hcl.addStretch(1)
-        self.buy_btn = WrapButton("", "green", 24, W_BOLD, height=92)
-        self.buy_btn.clicked.connect(lambda: ui.do(ui.game.buy_happiness))
-        hcl.addWidget(self.buy_btn)
-        row.addWidget(hc, 1)
-        lay.addLayout(row)
+    def _happy_card(self):
+        hc = Card("card")
+        hc.setFixedHeight(404 if not self.desktop else 400)
+        hl = QVBoxLayout(hc)
+        hl.setContentsMargins(30, 24, 30, 24)
+        hl.setSpacing(8)
+        top = QHBoxLayout()
+        top.addWidget(label("Happiness", 30, W_BOLD))
+        top.addStretch(1)
+        self.decay_badge = Badge("", 19, 42)
+        self.decay_badge.setFixedWidth(150)
+        top.addWidget(self.decay_badge)
+        hl.addLayout(top)
+        self.happy_val = label("", 66, W_BOLD, rich=True)
+        self.happy_val.setFixedHeight(84)
+        hl.addWidget(self.happy_val)
+        self.happy_bar = SegmentBar(10, 46)
+        hl.addWidget(self.happy_bar)
+        self.happy_note = label("", 19, W_MED, T["muted"], wrap=True)
+        hl.addWidget(self.happy_note)
+        hl.addStretch(1)
+        self.buy_btn = WrapButton("", "pink", 23, W_BOLD, height=84)
+        self.buy_btn.clicked.connect(lambda: self.ui.do(self.ui.game.buy_happiness))
+        hl.addWidget(self.buy_btn)
+        return hc
 
-        # --- money tiles --------------------------------------------------------
+    def _tiles(self):
         grid = QGridLayout()
         grid.setSpacing(14)
-        self.t_cash, self.t_inv, self.t_card = Tile("CASH"), Tile("INVESTMENTS"), Tile("CREDIT CARD")
-        self.t_loan, self.t_inc, self.t_ess = Tile("BANK LOANS"), Tile("PAY / QUARTER"), Tile("ESSENTIALS / QTR")
+        self.t_cash, self.t_inv, self.t_card = Tile("Cash"), Tile("Investments"), Tile("Credit card")
+        self.t_loan, self.t_inc, self.t_ess = Tile("Bank loans"), Tile("Pay / quarter"), Tile("Essentials / quarter")
         for i, t in enumerate([self.t_cash, self.t_inv, self.t_card, self.t_loan, self.t_inc, self.t_ess]):
             grid.addWidget(t, i // 3, i % 3)
-        lay.addLayout(grid)
+        return grid
 
-        # --- bills ----------------------------------------------------------------
-        bc = Card()
-        bc.setFixedHeight(168)
+    def _bills(self):
+        self.bills = Card("soft")
+        bc = self.bills
+        bc.setFixedHeight(200 if self.desktop else 166)
         bl = QHBoxLayout(bc)
-        bl.setContentsMargins(28, 16, 28, 16)
+        bl.setContentsMargins(30, 18, 30, 18)
         bl.setSpacing(20)
-        bleft = QVBoxLayout()
-        bleft.setSpacing(2)
-        bleft.addWidget(FitLabel("MINIMUM PAYMENT DUE THIS QUARTER", 20, W_BOLD, C_MUTED))
-        self.due_val = FitLabel("", 42, W_BOLD, C_TEXT)
-        bleft.addWidget(self.due_val)
-        self.due_note = label("", 19, W_MED, C_MUTED, wrap=True)
-        bleft.addWidget(self.due_note)
-        bl.addLayout(bleft, 3)
-        bright = QVBoxLayout()
-        bright.setSpacing(10)
-        self.due_chip = FitLabel("", 22, W_BOLD, C_TEXT, align=Qt.AlignmentFlag.AlignCenter)
-        self.due_chip.setFixedHeight(46)
-        bright.addWidget(self.due_chip)
+        left = QVBoxLayout()
+        left.setSpacing(2)
+        self.due_cap = FitLabel("Minimum payment due this quarter", 21, W_SEMI, T["muted"])
+        left.addWidget(self.due_cap)
+        self.due_val = FitLabel("", 42, W_BOLD)
+        left.addWidget(self.due_val)
+        self.due_note = label("", 19, W_MED, T["muted"], wrap=True)
+        left.addWidget(self.due_note)
+        left.addStretch(1)
+        bl.addLayout(left, 5)
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        self.due_chip = Badge("", 21, 48)
+        right.addWidget(self.due_chip)
         self.autopay = QCheckBox("Charge essentials to card (builds credit)")
         self.autopay.setFont(make_font(19, W_MED))
         self.autopay.toggled.connect(self._toggle_autopay)
-        bright.addWidget(self.autopay)
-        bl.addLayout(bright, 2)
-        lay.addWidget(bc)
+        right.addWidget(self.autopay)
+        right.addStretch(1)
+        bl.addLayout(right, 3)
+        return bc
 
-        # --- actions --------------------------------------------------------------
-        ac = Card()
+    def _actions(self):
+        ac = Card("card")
         al = QVBoxLayout(ac)
-        al.setContentsMargins(26, 18, 26, 20)
+        al.setContentsMargins(28, 22, 28, 24)
         al.setSpacing(14)
+        top = QHBoxLayout()
+        top.addWidget(label("Money moves", 30, W_BOLD))
+        top.addStretch(1)
+        top.addWidget(label("Payments go to your card first", 19, W_MED, T["muted"]))
+        al.addLayout(top)
         arow = QHBoxLayout()
         arow.setSpacing(10)
-        arow.addWidget(label("AMOUNT", 22, W_BOLD, C_MUTED))
-        minus = WrapButton("−", "chip", 32, W_BOLD, height=62)
+        minus = WrapButton("−", "chip", 32, W_BOLD, height=62, pad=4)
         minus.setFixedWidth(66)
         minus.clicked.connect(lambda: self.amount.stepBy(-1))
         arow.addWidget(minus)
@@ -1903,29 +2354,31 @@ class Dashboard(QWidget):
         self.amount.setGroupSeparatorShown(True)
         # NOTE: don't use NoButtons here - with a stylesheet Qt 6.12 collapses the text field;
         # the arrow buttons are hidden via the stylesheet instead.
-        self.amount.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.amount.setFont(make_font(30, W_BOLD))
-        self.amount.setFixedSize(230, 62)
+        self.amount.setAlignment(AL_C)
+        self.amount.setFont(make_font(28, W_BOLD))
+        self.amount.setFixedSize(190, 62)
         self.amount.valueChanged.connect(lambda _: self.refresh())
         arow.addWidget(self.amount)
-        plus = WrapButton("+", "chip", 32, W_BOLD, height=62)
+        plus = WrapButton("+", "chip", 32, W_BOLD, height=62, pad=4)
         plus.setFixedWidth(66)
         plus.clicked.connect(lambda: self.amount.stepBy(1))
         arow.addWidget(plus)
         for txt, val in (("$100", 100), ("$500", 500), ("$1k", 1000), ("$5k", 5000), ("All", None)):
-            chip = WrapButton(txt, "chip", 22, W_BOLD, height=62)
+            chip = WrapButton(txt, "chip", 21, W_SEMI, height=62, pad=4)
             chip.clicked.connect(lambda _=False, v=val: self._set_amount(v))
             arow.addWidget(chip)
         al.addLayout(arow)
 
-        agrid = QGridLayout()
-        agrid.setSpacing(12)
-        self.b_invest = WrapButton("", "blue", 23, W_BOLD, height=88)
-        self.b_withdraw = WrapButton("", "purple", 23, W_BOLD, height=88)
-        self.b_loan = WrapButton("", "amber", 23, W_BOLD, height=88)
-        self.b_pay = WrapButton("", "teal", 23, W_BOLD, height=88)
-        self.b_min = WrapButton("", "green", 23, W_BOLD, height=88)
-        self.b_all = WrapButton("", "teal", 23, W_BOLD, height=88)
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        h = 86
+        self.b_invest = WrapButton("", "blue", 22, W_BOLD, height=h)
+        self.b_withdraw = WrapButton("", "purple", 22, W_BOLD, height=h)
+        self.b_loan = WrapButton("", "amber", 22, W_BOLD, height=h)
+        self.b_min = WrapButton("", "green", 22, W_BOLD, height=h)
+        self.b_pay = WrapButton("", "teal", 22, W_BOLD, height=h)
+        self.b_all = WrapButton("", "teal", 22, W_BOLD, height=h)
+        ui = self.ui
         self.b_invest.clicked.connect(lambda: ui.do(lambda: ui.game.invest(self.amount.value())))
         self.b_withdraw.clicked.connect(lambda: ui.do(lambda: ui.game.withdraw(self.amount.value())))
         self.b_loan.clicked.connect(lambda: ui.do(lambda: ui.game.take_loan(self.amount.value())))
@@ -1933,41 +2386,42 @@ class Dashboard(QWidget):
         self.b_min.clicked.connect(lambda: ui.do(ui.game.pay_minimum))
         self.b_all.clicked.connect(lambda: ui.do(ui.game.pay_all))
         for i, b in enumerate([self.b_invest, self.b_withdraw, self.b_loan, self.b_min, self.b_pay, self.b_all]):
-            agrid.addWidget(b, i // 3, i % 3)
-        al.addLayout(agrid)
-        lay.addWidget(ac)
+            grid.addWidget(b, i // 3, i % 3)
+        al.addLayout(grid)
+        return ac
 
-        # --- log ------------------------------------------------------------------
-        lc = Card()
+    def _log(self):
+        lc = Card("card")
         ll = QVBoxLayout(lc)
-        ll.setContentsMargins(28, 16, 18, 16)
-        ll.setSpacing(8)
-        ll.addWidget(label("ACTIVITY LOG", 22, W_BOLD, C_MUTED))
-        self.log_lbl = label("", 21, W_NORMAL, C_TEXT, wrap=True, rich=True)
+        ll.setContentsMargins(30, 22, 18, 20)
+        ll.setSpacing(10)
+        ll.addWidget(label("Activity", 30, W_BOLD))
+        self.log_lbl = label("", 21, W_NORMAL, wrap=True, rich=True)
         self.log_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         holder = QWidget()
-        hl2 = QVBoxLayout(holder)
-        hl2.setContentsMargins(0, 0, 12, 0)
-        hl2.addWidget(self.log_lbl)
-        hl2.addStretch(1)
-        self.log_scroll = QScrollArea()
-        self.log_scroll.setWidgetResizable(True)
-        self.log_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.log_scroll.setWidget(holder)
-        ll.addWidget(self.log_scroll)
-        lay.addWidget(lc, 1)
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 12, 0)
+        hl.addWidget(self.log_lbl)
+        hl.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(holder)
+        ll.addWidget(scroll)
+        return lc
 
-        # --- bottom -----------------------------------------------------------------
-        brow = QHBoxLayout()
-        brow.setSpacing(16)
-        self.retire_btn = WrapButton("RETIRE EARLY", "teal", 30, W_BOLD, height=116)
-        self.retire_btn.clicked.connect(ui.confirm_retire)
-        self.retire_btn.setFixedWidth(330)
-        brow.addWidget(self.retire_btn)
-        self.next_btn = WrapButton("ADVANCE 3 MONTHS  »", "gold", 44, W_BOLD, height=116)
-        self.next_btn.clicked.connect(ui.advance)
-        brow.addWidget(self.next_btn)
-        lay.addLayout(brow)
+    def _bottom(self):
+        box = QVBoxLayout() if self.desktop else QHBoxLayout()
+        box.setSpacing(14)
+        self.retire_btn = WrapButton("Retire early", "solid_green", 30, W_BOLD, height=100 if self.desktop else 116)
+        self.retire_btn.clicked.connect(self.ui.confirm_retire)
+        if not self.desktop:
+            self.retire_btn.setFixedWidth(320)
+        box.addWidget(self.retire_btn)
+        self.next_btn = WrapButton("Advance 3 months  →", "primary", 40, W_BOLD, height=124 if self.desktop else 116)
+        self.next_btn.clicked.connect(self.ui.advance)
+        box.addWidget(self.next_btn)
+        return box
 
     # ---------------------------------------------------------------------------
     def _set_amount(self, v):
@@ -1980,107 +2434,119 @@ class Dashboard(QWidget):
             g.essentials_on_card = on
             g.add_log("Essentials will now be charged to your card — pay the statement each quarter!"
                       if on else "Essentials will now be paid from cash", "card" if on else "info")
+            self.ui.win.save_game()
             self.refresh()
 
     def refresh(self):
         g = self.ui.game
         amt = self.amount.value()
 
-        years_left = 65 - g.age_years
-        self.age_lbl.setText(f"AGE {g.age_years}  ·  Q{g.quarter()}")
-        self.sub_lbl.setText(f"{years_left} years to retirement  ·  Turn {g.turns_played}")
+        self.age_lbl.setText(f"<span style='font-weight:300'>Age </span><span style='font-weight:700'>{g.age_years}</span>"
+                             f"<span style='font-weight:300; color:{T['muted']}'>  ·  Q{g.quarter()}</span>")
+        self.sub_lbl.setText(f"{65 - g.age_years} years to retirement  ·  Turn {g.turns_played}")
         nw = g.get_net_worth()
         self.nw_lbl.setText(money(nw))
-        set_color(self.nw_lbl, C_GREEN if nw >= 0 else C_RED_L)
+        set_color(self.nw_lbl, T["text"] if nw >= 0 else T["red"])
 
         t = g.tier()
         col = score_color(g.credit_score)
         self.gauge.set_score(g.credit_score, t[1], col)
+        if self.desktop:
+            self.tier_badge.setText(t[1])
         self.rates_lbl.setText(f"Loans {t[2]:.2%}/qtr  ·  Card {t[3]:.2%}/qtr")
         notes = []
+        danger = g.low_credit_turns or g.credit_score < g.IRS_SCORE
         if g.history_capped():
             notes.append(f"History cap: max 700 for {g.HISTORY_CAP_TURNS - g.turns_played} more quarters")
         if g.streak:
-            notes.append(f"On-time streak: {g.streak}")
-        if g.low_credit_turns or g.credit_score < g.IRS_SCORE:
-            notes.append(f"IRS SEIZURE RISK: {g.low_credit_turns}/{g.IRS_TURNS} strikes")
+            notes.append(f"On-time streak {g.streak}")
+        if danger:
+            notes.append(f"IRS SEIZURE RISK {g.low_credit_turns}/{g.IRS_TURNS}")
         self.credit_note.setText("  ·  ".join(notes) if notes else "Pay your minimum each quarter to climb")
-        set_color(self.credit_note, C_RED_L if g.low_credit_turns or g.credit_score < g.IRS_SCORE else C_MUTED)
+        set_color(self.credit_note, T["red"] if danger else T["muted"])
 
-        hcol = C_GREEN if g.happiness > 50 else (C_GOLD if g.happiness > 25 else C_RED)
-        self.happy_val.setText(f"{g.happiness} / 100")
-        set_color(self.happy_val, hcol)
+        hcol = T["seg_fill"] if g.happiness > 50 else (T["amber"] if g.happiness > 25 else T["red"])
+        self.happy_val.setText(f"<span style='color:{T['text'] if g.happiness > 25 else T['red']}'>{g.happiness}</span>"
+                               f"<span style='font-size:26px; font-weight:500; color:{T['muted']}'>  / 100</span>")
         self.happy_bar.set_value(g.happiness / 100, hcol)
+        self.decay_badge.setText(f"−{g.happiness_decay()} / qtr")
         if g.zero_happiness_turns:
             self.happy_note.setText(f"DEPRESSION WARNING {g.zero_happiness_turns}/{g.DEPRESSION_TURNS} — "
                                     "buy leisure now or you won't survive the year!")
-            set_color(self.happy_note, C_RED_L)
+            set_color(self.happy_note, T["red"])
         else:
-            self.happy_note.setText(f"Life & work stress drain about {g.happiness_decay()} every quarter. "
-                                    f"Zero for a year is fatal.")
-            set_color(self.happy_note, C_MUTED)
+            self.happy_note.setText("Work & life stress drain it every quarter. Zero for a full year is fatal.")
+            set_color(self.happy_note, T["muted"])
         cost = g.happiness_cost()
-        self.buy_btn.setText(f"Buy leisure & hobbies\n-{money(cost)}  ·  +{g.HAPPY_PTS} happiness")
+        self.buy_btn.setText(f"Buy leisure & hobbies\n−{money(cost)}  ·  +{g.HAPPY_PTS} happiness")
         self.buy_btn.setEnabled(g.cash >= cost and g.happiness < 100)
 
         od = g.overdraft_used()
-        self.t_cash.set(money(g.cash), C_RED_L if g.cash < 0 else C_GREEN,
-                        f"OVERDRAFT {money(od)} / {money(g.OVERDRAFT_LIMIT)}" if od else
-                        f"Overdraft limit {money(g.OVERDRAFT_LIMIT)}", C_RED_L if od else C_MUTED)
-        fee_txt = "No withdrawal fee (60+)" if g.withdraw_fee_rate() == 0 else "5% fee to withdraw before 60"
-        self.t_inv.set(money(g.investments), "#60A5FA", fee_txt)
+        self.t_cash.set(money(g.cash), T["red"] if g.cash < 0 else T["green"],
+                        f"Overdraft {money(od)} / {money(g.OVERDRAFT_LIMIT)}" if od else
+                        f"Overdraft limit {money(g.OVERDRAFT_LIMIT)}", T["red"] if od else None)
+        self.t_inv.set(money(g.investments), T["blue"],
+                       "No withdrawal fee (60+)" if g.withdraw_fee_rate() == 0 else "5% fee to withdraw before 60")
         util = g.card / max(1, g.card_limit())
-        self.t_card.set(money(g.card), "#A78BFA" if g.card <= g.card_limit() else C_RED_L,
+        self.t_card.set(money(g.card), T["purple"] if g.card <= g.card_limit() else T["red"],
                         f"{money(g.card_available())} free of {money(g.card_limit())}",
-                        C_RED_L if util > 0.9 else C_MUTED)
+                        T["red"] if util > 0.9 else None)
         cap = g.loan_capacity()
-        self.t_loan.set(money(g.loans), C_AMBER if g.loans else C_DIM,
+        self.t_loan.set(money(g.loans), T["amber"] if g.loans else T["dim"],
                         f"Can borrow {money(g.loan_room())}" if cap else "Loans need a 450+ score",
-                        C_MUTED if cap else C_RED_L)
+                        None if cap else T["red"])
         inc_sub = f"Certifications {g.courses_taken}/{g.MAX_COURSES}"
         if g.layoff_turns:
             inc_sub = f"{int(g.layoff_mult * 100)}% pay for {g.layoff_turns} more qtr"
         elif not g.has_car:
-            inc_sub += "  ·  no car -10%"
-        self.t_inc.set(money(g.quarterly_income()), C_GOLD, inc_sub, C_AMBER if g.layoff_turns else C_MUTED)
+            inc_sub += "  ·  no car −10%"
+        self.t_inc.set(money(g.quarterly_income()), T["gold"], inc_sub, T["amber"] if g.layoff_turns else None)
         items = g.essentials_breakdown()
-        self.t_ess.set(money(g.essentials_total()), "#FCA5A5", "Rent, food & bills — compulsory")
+        self.t_ess.set(money(g.essentials_total()), T["pink"], "Rent, food & bills — compulsory")
         self.t_ess.setToolTip("\n".join(f"{n}: {money(v)}" for n, v in items))
 
-        # bills
         rem = g.remaining_due()
         if g.min_due <= 0:
+            self.bills.set_kind("soft")
+            fg = T["text"]
             self.due_val.setText("$0 — no bill")
-            set_color(self.due_val, C_MUTED)
-            self.due_note.setText("No card or loan balance on your last statement. Use your card and pay it "
-                                  "back to build credit.")
-            self.due_chip.setText("NO BILL")
-            self.due_chip.setStyleSheet(f"color:{C_MUTED}; background:#1A2337; border-radius:14px;")
+            self.due_note.setText("No card or loan balance on your last statement. Use your card and pay it back "
+                                  "to build credit.")
+            self.due_chip.setText("No bill")
+            self.due_chip.set_style(T["card"], T["muted"])
+            muted = T["muted"]
         elif rem <= 0:
+            self.bills.set_kind("tint_green")
+            fg = T["tints"]["green"][2]
+            muted = fg
             self.due_val.setText(f"{money(g.min_due)}  ✓ paid")
-            set_color(self.due_val, C_GREEN)
             extra = ("Statement fully paid — no card interest." if g.paid_card_this_qtr >= g.stmt_card
                      else f"Pay the full {money(g.stmt_card)} statement to skip card interest.")
             self.due_note.setText(f"Paid {money(g.paid_this_qtr)} this quarter. {extra}")
-            self.due_chip.setText("ON TIME")
-            self.due_chip.setStyleSheet(f"color:#04130A; background:{C_GREEN}; border-radius:14px;")
+            self.due_chip.setText("On time")
+            self.due_chip.set_style(T["primary"], T["primary_text"])
         else:
+            self.bills.set_kind("tint_red")
+            fg = T["tints"]["red"][2]
+            muted = fg
             self.due_val.setText(f"{money(rem)} still due")
-            set_color(self.due_val, C_GOLD)
-            self.due_note.setText(f"Minimum {money(g.min_due)}, paid {money(g.paid_this_qtr)}. Advance now = "
-                                  f"{'LATE (-20)' if g.paid_this_qtr else 'MISSED (-50)'}.")
-            self.due_chip.setText("UNPAID")
-            self.due_chip.setStyleSheet(f"color:#1A0505; background:{C_RED_L}; border-radius:14px;")
+            self.due_note.setText(f"Minimum {money(g.min_due)}, paid {money(g.paid_this_qtr)}. Advancing now = "
+                                  f"{'LATE (−20)' if g.paid_this_qtr else 'MISSED (−50)'}.")
+            self.due_chip.setText("Unpaid")
+            self.due_chip.set_style(T["red"], "#FFFFFF" if T["primary"] == "#111317" else "#1A0505")
+        set_color(self.due_val, fg)
+        set_color(self.due_note, muted)
+        set_color(self.due_cap, muted)
+        self.autopay.setStyleSheet(f"QCheckBox {{ color:{muted}; }}")
         if self.autopay.isChecked() != g.essentials_on_card:
             self.autopay.blockSignals(True)
             self.autopay.setChecked(g.essentials_on_card)
             self.autopay.blockSignals(False)
 
-        # action buttons
         fee = int(min(amt, g.investments) * g.withdraw_fee_rate())
         self.b_invest.setText(f"Invest\n{money(amt)}")
         self.b_invest.setEnabled(0 < amt <= g.cash)
-        self.b_withdraw.setText(f"Withdraw\n{money(min(amt, g.investments))}" + (f" (-{money(fee)} fee)" if fee else ""))
+        self.b_withdraw.setText(f"Withdraw\n{money(min(amt, g.investments))}" + (f" (−{money(fee)} fee)" if fee else ""))
         self.b_withdraw.setEnabled(g.investments > 0 and amt > 0)
         self.b_loan.setText(f"Borrow\n{money(amt)} @ {g.loan_rate():.2%}")
         lr = g.loan_block_reason(amt)
@@ -2094,11 +2560,10 @@ class Dashboard(QWidget):
         self.b_all.setText(f"Pay off all\n{money(owed)}")
         self.b_all.setEnabled(owed > 0 and g.cash > 0)
 
-        # log (newest first)
         lines = []
         for when, text, tone in reversed(g.log[-60:]):
-            lines.append(f"<span style='color:{C_DIM}'>{esc(when)}</span>&nbsp;&nbsp;"
-                         f"<span style='color:{TONE_COLORS.get(tone, C_TEXT)}'>{esc(text)}</span>")
+            lines.append(f"<span style='color:{T['dim']}'>{esc(when)}</span>&nbsp;&nbsp;"
+                         f"<span style='color:{tone_color(tone)}'>{esc(text)}</span>")
         self.log_lbl.setText("<br>".join(lines))
 
         self.retire_btn.setVisible(g.get_net_worth() >= g.MILLION)
@@ -2106,69 +2571,108 @@ class Dashboard(QWidget):
 
 
 class GameOverPage(QWidget):
-    def __init__(self, on_restart):
+    def __init__(self, ui, desktop):
         super().__init__()
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(56, 90, 56, 80)
-        lay.setSpacing(24)
-        self.title = label("", 70, W_BOLD, C_GOLD, wrap=True, align=Qt.AlignmentFlag.AlignCenter)
-        self.sub = label("", 30, W_MED, "#C9D3E6", wrap=True, align=Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self.title)
-        lay.addWidget(self.sub)
-        self.card = Card()
+        self.ui = ui
+        self.title = label("", 84, W_NORMAL, wrap=True, rich=True)
+        self.sub = label("", 30, W_NORMAL, T["muted"], wrap=True)
+        self.badge = Badge("", 22, 52)
+        self.badge.setFixedWidth(220)
+
+        self.card = Card("card")
         cl = QVBoxLayout(self.card)
         cl.setContentsMargins(44, 34, 44, 34)
-        cl.setSpacing(4)
+        cl.setSpacing(6)
+        cl.addWidget(label("Your life in numbers", 32, W_BOLD))
+        cl.addSpacing(6)
         self.rows = []
         for _ in range(9):
             r = QHBoxLayout()
-            a = FitLabel("", 30, W_SEMI, C_MUTED)
-            b = FitLabel("", 34, W_BOLD, C_TEXT, align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            a = FitLabel("", 26, W_MED, T["muted"])
+            b = FitLabel("", 30, W_BOLD, align=AL_R)
             r.addWidget(a, 3)
             r.addWidget(b, 2)
             cl.addLayout(r)
             self.rows.append((a, b))
-        cl.addSpacing(16)
-        self.score_cap = FitLabel("FINAL SCORE", 30, W_BOLD, C_GOLD, align=Qt.AlignmentFlag.AlignCenter)
-        self.score = FitLabel("", 80, W_BOLD, C_GOLD, align=Qt.AlignmentFlag.AlignCenter)
-        cl.addWidget(self.score_cap)
-        cl.addWidget(self.score)
-        lay.addWidget(self.card)
-        self.ach = label("", 24, W_NORMAL, "#C9D3E6", wrap=True, rich=True, align=Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self.ach)
-        lay.addStretch(1)
-        btn = WrapButton("PLAY AGAIN", "green", 50, W_BOLD, height=140)
-        btn.clicked.connect(on_restart)
-        lay.addWidget(btn)
+
+        score_card = Card("tint_blue")
+        sl = QVBoxLayout(score_card)
+        sl.setContentsMargins(40, 28, 40, 30)
+        fg = T["tints"]["blue"][2]
+        sl.addWidget(FitLabel("Final score", 26, W_SEMI, fg))
+        self.score = FitLabel("", 96, W_BOLD, fg)
+        sl.addWidget(self.score)
+        self.ach = label("", 23, W_NORMAL, T["text2"], wrap=True, rich=True)
+
+        again = WrapButton("Play again — new credit card", "primary", 36, W_BOLD, height=120)
+        again.clicked.connect(ui.new_game)
+        menu = WrapButton("Main menu", "outline", 27, W_SEMI, height=92)
+        menu.clicked.connect(ui.to_menu)
+
+        if desktop:
+            lay = QHBoxLayout(self)
+            lay.setContentsMargins(80, 64, 80, 64)
+            lay.setSpacing(60)
+            left = QVBoxLayout()
+            left.setSpacing(24)
+            left.addWidget(self.badge)
+            left.addWidget(self.title)
+            left.addWidget(self.sub)
+            left.addWidget(score_card)
+            left.addWidget(self.ach)
+            left.addStretch(1)
+            left.addWidget(again)
+            left.addWidget(menu)
+            lay.addLayout(left, 1)
+            right = QVBoxLayout()
+            right.addWidget(self.card)
+            right.addStretch(1)
+            lay.addLayout(right, 1)
+        else:
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(56, 70, 56, 60)
+            lay.setSpacing(22)
+            lay.addWidget(self.badge)
+            lay.addWidget(self.title)
+            lay.addWidget(self.sub)
+            lay.addWidget(score_card)
+            lay.addWidget(self.card)
+            lay.addWidget(self.ach)
+            lay.addStretch(1)
+            lay.addWidget(again)
+            lay.addWidget(menu)
 
     def show_game(self, g):
         r = g.end_reason
-        if r in ("RETIREMENT", "EARLY_RETIREMENT"):
-            self.title.setText("CONGRATULATIONS!")
-            set_color(self.title, C_GOLD)
+        good = r in ("RETIREMENT", "EARLY_RETIREMENT")
+        if good:
+            self.title.setText("<span style='font-weight:300'>You </span><b>retired.</b>")
+            self.badge.setText("Early retirement" if r == "EARLY_RETIREMENT" else "Age 65")
+            self.badge.set_style(*T["tints"]["green"][::2])
             self.sub.setText("You retired early as a millionaire!" if r == "EARLY_RETIREMENT"
                              else "You made it to 65 and retired.")
         elif r == "IRS_SEIZURE":
-            self.title.setText("ASSETS SEIZED")
-            set_color(self.title, C_RED_L)
+            self.title.setText("<span style='font-weight:300'>Assets </span><b>seized.</b>")
+            self.badge.setText("Game over")
+            self.badge.set_style(*T["tints"]["red"][::2])
             self.sub.setText("Your credit score stayed under 300 for two years and the IRS took everything.")
         else:
-            self.title.setText("LOST TO DEPRESSION")
-            set_color(self.title, C_RED_L)
+            self.title.setText("<span style='font-weight:300'>Lost to </span><b>depression.</b>")
+            self.badge.setText("Game over")
+            self.badge.set_style(*T["tints"]["red"][::2])
             self.sub.setText("Your happiness stayed at 0 for a full year. Money matters — but so does living.")
         nw = g.get_net_worth()
-        mult = f"x{0.5 + g.credit_score / 2000:.2f} credit multiplier" if r in ("RETIREMENT", "EARLY_RETIREMENT") \
-            else f"-{money(g.DEATH_PENALTY)} penalty"
+        mult = f"×{0.5 + g.credit_score / 2000:.2f} credit multiplier" if good else f"−{money(g.DEATH_PENALTY)} penalty"
         data = [
-            ("Age reached", str(g.age_years), C_TEXT),
-            ("Net worth", money(nw), C_GREEN if nw >= 0 else C_RED_L),
+            ("Age reached", str(g.age_years), T["text"]),
+            ("Net worth", money(nw), T["green"] if nw >= 0 else T["red"]),
             ("Credit score", f"{g.credit_score} ({g.tier()[1]})", score_color(g.credit_score)),
-            ("Investments", money(g.investments), "#60A5FA"),
-            ("Debt remaining", money(g.card + g.loans + g.overdraft_used()), C_RED_L if g.total_debt() else C_DIM),
-            ("Lifetime interest paid", money(g.stats["interest"]), C_RED_L),
-            ("Lifetime fees paid", money(g.stats["fees"]), C_RED_L),
-            ("Payments on time / late / missed", f"{g.stats['on_time']} / {g.stats['late']} / {g.stats['missed']}", C_TEXT),
-            ("Score modifier", mult, C_GOLD),
+            ("Investments", money(g.investments), T["blue"]),
+            ("Debt remaining", money(g.card + g.loans + g.overdraft_used()), T["red"] if g.total_debt() else T["dim"]),
+            ("Lifetime interest paid", money(g.stats["interest"]), T["red"]),
+            ("Lifetime fees paid", money(g.stats["fees"]), T["red"]),
+            ("Payments on time / late / missed", f"{g.stats['on_time']} / {g.stats['late']} / {g.stats['missed']}", T["text"]),
+            ("Score modifier", mult, T["gold"]),
         ]
         for (a, b), (k, v, c) in zip(self.rows, data):
             a.setText(k)
@@ -2177,48 +2681,87 @@ class GameOverPage(QWidget):
         self.score.setText(f"{g.final_score():,}")
         if g.achievements:
             names = "  ·  ".join(esc(g.ACHIEVEMENTS[k][0]) for k in g.achievements)
-            self.ach.setText(f"<b style='color:{C_GOLD}'>Achievements ({len(g.achievements)}/{len(g.ACHIEVEMENTS)})</b><br>{names}")
+            self.ach.setText(f"<b>Achievements {len(g.achievements)}/{len(g.ACHIEVEMENTS)}</b><br>{names}")
         else:
             self.ach.setText("No achievements this time.")
 
 
 # ---------------------------------------------------------------- controller --
 class GameUI(QWidget):
-    def __init__(self):
+    def __init__(self, win, mode):
         super().__init__()
+        self.win = win
+        self.mode = mode
+        desktop = mode == "desktop"
+        cw, ch = CANVAS[mode]
         self.setObjectName("root")
-        self.setFixedSize(VW, VH)
+        self.setFixedSize(cw, ch)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(build_stylesheet())
         self.setFont(make_font(24))
-        self.game = LifeGame()
         self.popup_queue = []
 
         self.stack = QStackedWidget(self)
-        self.stack.setGeometry(0, 0, VW, VH)
-        self.start_page = StartPage(self.start_game, self.show_guide)
-        self.dash = Dashboard(self)
-        self.over_page = GameOverPage(self.restart)
+        self.stack.setGeometry(0, 0, cw, ch)
+        self.start_page = StartPage(self, desktop)
+        self.dash = Dashboard(self, desktop)
+        self.over_page = GameOverPage(self, desktop)
         for w in (self.start_page, self.dash, self.over_page):
             self.stack.addWidget(w)
 
-        self.event_overlay = EventOverlay(self, self.choose)
-        self.popup = PopupOverlay(self, self._pump)
+        self.event_overlay = EventOverlay(self, self.choose, desktop)
+        self.popup = PopupOverlay(self, self.after_overlay, desktop)
+        self.settings = SettingsOverlay(self, self, desktop)
         self.toast = Toast(self)
 
-    # ------------------------------------------------------------------------
-    def start_game(self):
-        self.game.start()
-        self.stack.setCurrentWidget(self.dash)
+        if win.page == "menu":
+            self.stack.setCurrentWidget(self.start_page)
+        else:
+            self.after(save=False)
+
+    @property
+    def game(self):
+        return self.win.game
+
+    # ----------------------------------------------------------- navigation --
+    def new_game(self):
+        self.win.delete_save()
+        self.win.game = LifeGame()
+        self.win.game.start()
+        self.win.page = "game"
+        self.popup_queue.clear()
+        self.event_overlay.hide()
         self.after()
 
-    def restart(self):
-        self.game.reset()
-        self.event_overlay.hide()
-        self.popup_queue.clear()
-        self.dash.amount.setValue(500)
-        self.start_game()
+    def confirm_new_game(self):
+        g = self.game
+        body = (f"<p>Starting a new credit card <b>permanently deletes</b> your saved game:</p>"
+                f"<p><b>Age {g.age_years} Q{g.quarter()}</b> · net worth {money(g.get_net_worth())} · "
+                f"credit {g.credit_score}</p><p>This can't be undone.</p>")
+        self.popup_queue.insert(0, {"title": "Delete your saved game?", "body": body, "kind": "warning",
+                                    "buttons": [("Delete & start new", "red", self.win.restart_new_game),
+                                                ("Keep my save", "soft", None)]})
+        self._pump()
 
+    def resume(self):
+        self.win.page = "game"
+        self.after(save=False)
+
+    def to_menu(self):
+        self.win.save_game()
+        self.win.page = "menu"
+        self.win.has_save = self.win.save_exists()
+        self.win.rebuild_later()
+
+    def open_settings(self):
+        self.settings.open()
+
+    def after_overlay(self):
+        if self.win.page == "game" and self.game.state in ("main", "event"):
+            self.dash.refresh()
+        self._pump()
+
+    # -------------------------------------------------------------- actions --
     def do(self, fn):
         res = fn()
         if isinstance(res, tuple) and not res[0] and res[1]:
@@ -2232,17 +2775,17 @@ class GameUI(QWidget):
         g = self.game
         rem = g.remaining_due()
         if g.state == "main" and rem > 0:
-            hit = "LATE payment (-20 credit)" if g.paid_this_qtr else "MISSED payment (-50 credit)"
+            hit = "LATE payment (−20 credit)" if g.paid_this_qtr else "MISSED payment (−50 credit)"
             can_pay = g.cash >= rem
             body = (f"<p>Your minimum payment of <b>{money(g.min_due)}</b> isn't covered yet — "
-                    f"<b style='color:{C_GOLD}'>{money(rem)}</b> is still due.</p>"
-                    f"<p>If you advance now it counts as a <b style='color:{C_RED_L}'>{hit}</b>.</p>"
-                    + ("" if can_pay else f"<p style='color:{C_RED_L}'>You don't have enough cash to cover it. "
+                    f"<b>{money(rem)}</b> is still due.</p>"
+                    f"<p>If you advance now it counts as a <b style='color:{T['red']}'>{hit}</b>.</p>"
+                    + ("" if can_pay else f"<p style='color:{T['red']}'>You don't have enough cash to cover it. "
                        "Consider withdrawing investments or taking a cheaper bank loan to pay the card.</p>"))
-            self.popup_queue.insert(0, ("Payment not covered", body, "warning", [
-                (f"Pay {money(rem)} now", "green", self._pay_and_advance if can_pay else False),
-                ("Advance anyway", "red", self._advance_now),
-                ("Cancel", "slate", None)]))
+            self.popup_queue.insert(0, {"title": "Payment not covered", "body": body, "kind": "warning",
+                                        "buttons": [(f"Pay {money(rem)} now", "green", self._pay_and_advance if can_pay else False),
+                                                    ("Advance anyway", "red", self._advance_now),
+                                                    ("Cancel", "soft", None)]})
             self._pump()
             return
         self._advance_now()
@@ -2259,41 +2802,45 @@ class GameUI(QWidget):
         g = self.game
         mult = 0.5 + g.credit_score / 2000
         body = (f"<p>Retire now with a net worth of <b>{money(g.get_net_worth())}</b>?</p>"
-                f"<p>Your final score will be net worth x {mult:.2f} (credit multiplier) = "
-                f"<b style='color:{C_GOLD}'>{int(g.get_net_worth() * mult):,}</b>.</p>")
-        self.popup_queue.insert(0, ("Retire early?", body, "gold", [
-            ("Retire now", "teal", lambda: self.do(g.retire_early)),
-            ("Keep working", "slate", None)]))
+                f"<p>Your final score will be net worth × {mult:.2f} (credit multiplier) = "
+                f"<b>{int(g.get_net_worth() * mult):,}</b>.</p>")
+        self.popup_queue.insert(0, {"title": "Retire early?", "body": body, "kind": "gold",
+                                    "buttons": [("Retire now", "solid_green", lambda: self.do(g.retire_early)),
+                                                ("Keep working", "soft", None)]})
         self._pump()
 
     def show_guide(self):
-        self.popup_queue.insert(0, ("Credit 101", self.game.credit_guide_html(), "gold", None))
+        self.popup_queue.insert(0, {"title": "Credit 101", "body": self.game.credit_guide_html(), "kind": "gold"})
         self._pump()
 
     # ------------------------------------------------------------------------
-    def after(self):
+    def after(self, save=True):
         g = self.game
         for text, tone in g.toasts:
             self.toast.push(text, tone)
         g.toasts.clear()
         for p in g.popups:
-            btns = None
+            item = dict(p)
             if p.get("guide"):
-                btns = [("Open full credit guide", "ghost", self.show_guide), ("Got it", "gold", None)]
-            self.popup_queue.append((p["title"], p["body"], p.get("kind", "info"), btns))
+                item["buttons"] = [("Open full credit guide", "outline", self.show_guide), ("Got it", "primary", None)]
+            self.popup_queue.append(item)
         g.popups.clear()
 
         if g.state == "game_over":
             self.event_overlay.hide()
-            self.popup_queue = [q for q in self.popup_queue if q[0] == "Credit 101"]
+            self.popup_queue = [q for q in self.popup_queue if q["title"] == "Credit 101"]
             self.over_page.show_game(g)
             self.stack.setCurrentWidget(self.over_page)
+            self.win.delete_save()
         elif g.state in ("main", "event"):
+            self.stack.setCurrentWidget(self.dash)
             self.dash.refresh()
             if g.state == "event":
                 self.event_overlay.show_event(g)
             else:
                 self.event_overlay.hide()
+            if save:
+                self.win.save_game()
         self._pump()
 
     def _pump(self):
@@ -2301,20 +2848,21 @@ class GameUI(QWidget):
             if self.popup.isVisible():
                 self.popup.raise_()
             return
-        title, body, kind, btns = self.popup_queue.pop(0)
-        self.popup.show_popup(title, body, kind, btns)
+        item = self.popup_queue.pop(0)
+        self.popup.show_popup(item["title"], item["body"], item.get("kind", "info"), item.get("buttons"))
         self.toast.raise_()
 
 
 class ScaledView(QGraphicsView):
-    """Uniformly scales the fixed 1080x1920 canvas into any window, centred, letterboxed."""
+    """Uniformly scales the fixed canvas into any window, centred; leftover space shows as bars."""
 
-    def __init__(self, root):
+    def __init__(self, root, cw, ch):
         super().__init__()
+        self.cw, self.ch = cw, ch
         self.scene_ = QGraphicsScene(self)
         self.proxy = self.scene_.addWidget(root)
         self.setScene(self.scene_)
-        self.setSceneRect(0, 0, VW, VH)
+        self.setSceneRect(0, 0, cw, ch)
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing |
                             QPainter.RenderHint.SmoothPixmapTransform)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
@@ -2322,57 +2870,173 @@ class ScaledView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setAlignment(AL_C)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        s = min(self.viewport().width() / VW, self.viewport().height() / VH)
+        s = min(self.viewport().width() / self.cw, self.viewport().height() / self.ch)
         self.setTransform(QTransform.fromScale(s, s))
-        self.centerOn(VW / 2, VH / 2)
+        self.centerOn(self.cw / 2, self.ch / 2)
 
     def wheelEvent(self, e):
-        # route wheel to embedded widgets only; never scroll the view itself
-        item = self.itemAt(e.position().toPoint())
-        if item is not None:
+        if self.itemAt(e.position().toPoint()) is not None:
             super().wheelEvent(e)
 
 
+# ------------------------------------------------------------------ storage --
+def data_dir():
+    d = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+    if not d:
+        d = os.path.join(os.path.expanduser("~"), ".financial_odyssey")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def write_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)                 # atomic: a crash never leaves a half-written save
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, storage_dir=None):
         super().__init__()
         self.setWindowTitle("Financial Odyssey: 18 to 65")
-        self.ui = GameUI()
-        self.ui.popup.on_close = self._popup_closed
-        self.view = ScaledView(self.ui)
-        self.setCentralWidget(self.view)
         self.setStyleSheet("QMainWindow { background:#000; }")
+        self.dir = storage_dir or data_dir()
+        os.makedirs(self.dir, exist_ok=True)
+        self.save_path = os.path.join(self.dir, "savegame.json")
+        self.settings_path = os.path.join(self.dir, "settings.json")
 
-        # Initial size: 9:16 window filling ~92% of the screen height (or width if the
-        # screen is narrow). Same proportions on every monitor / phone / tablet.
-        scr = QGuiApplication.primaryScreen().availableGeometry()
-        h = int(scr.height() * 0.92)
-        w = int(h * VW / VH)
-        if w > scr.width() * 0.96:
-            w = int(scr.width() * 0.96)
-            h = int(w * VH / VW)
-        self.resize(w, h)
-        self.move(scr.x() + (scr.width() - w) // 2, scr.y() + (scr.height() - h) // 2)
-        self.setMinimumSize(270, 480)
+        self.settings = {"theme": "light", "layout": "mobile"}
+        saved = read_json(self.settings_path) or {}
+        if saved.get("theme") in THEMES:
+            self.settings["theme"] = saved["theme"]
+        if saved.get("layout") in CANVAS:
+            self.settings["layout"] = saved["layout"]
+        self.game = self.load_game() or LifeGame()
+        self.has_save = self.game.state in ("main", "event")
+        self.page = "menu"
+        self.ui = None
 
+        self.setMinimumSize(320, 320)
+        self.rebuild()
+        self.fit_window(center=True)
         QShortcut(QKeySequence("F11"), self, self.toggle_fullscreen)
         QShortcut(QKeySequence("Esc"), self, lambda: self.showNormal() if self.isFullScreen() else None)
 
-    def _popup_closed(self):
-        self.ui.dash.refresh() if self.ui.game.state in ("main", "event") else None
-        self.ui._pump()
+    # -------------------------------------------------------------- saving --
+    def load_game(self):
+        d = read_json(self.save_path)
+        if not d:
+            return None
+        try:
+            g = LifeGame.from_dict(d)
+            return g if g.state in ("main", "event") else None
+        except Exception:
+            return None
+
+    def save_exists(self):
+        return os.path.exists(self.save_path)
+
+    def save_game(self):
+        if self.page == "game" and self.game.state in ("main", "event"):
+            try:
+                write_json(self.save_path, self.game.to_dict())
+            except OSError:
+                pass
+
+    def delete_save(self):
+        try:
+            os.remove(self.save_path)
+        except OSError:
+            pass
+
+    def save_settings(self):
+        try:
+            write_json(self.settings_path, self.settings)
+        except OSError:
+            pass
+
+    def restart_new_game(self):
+        self.ui.new_game()
+
+    def closeEvent(self, e):
+        self.save_game()
+        super().closeEvent(e)
+
+    # ------------------------------------------------------- theme & layout --
+    def rebuild(self, reopen_settings=False):
+        use_theme(self.settings["theme"])
+        mode = self.settings["layout"] if self.settings["layout"] in CANVAS else "mobile"
+        carry = [q for q in (self.ui.popup_queue if self.ui else []) if not q.get("buttons")]
+        self.ui = GameUI(self, mode)
+        self.ui.popup_queue[:0] = carry
+        cw, ch = CANVAS[mode]
+        self.setCentralWidget(ScaledView(self.ui, cw, ch))
+        if reopen_settings:
+            self.ui.open_settings()
+        else:
+            self.ui._pump()
+
+    def rebuild_later(self, reopen_settings=False):
+        # defer so we never delete the widget whose click handler is still running
+        QTimer.singleShot(0, lambda: self.rebuild(reopen_settings))
+
+    def set_theme(self, name):
+        if name in THEMES and name != self.settings["theme"]:
+            self.settings["theme"] = name
+            self.save_settings()
+            self.rebuild_later(reopen_settings=True)
+
+    def set_layout(self, mode):
+        if mode in CANVAS and mode != self.settings["layout"]:
+            self.settings["layout"] = mode
+            self.save_settings()
+            self.rebuild_later(reopen_settings=True)
+            QTimer.singleShot(0, self.fit_window)
+
+    def fit_window(self, center=False):
+        """Size the window to the layout's aspect ratio (still letterboxes if resized freely)."""
+        if self.isFullScreen() or self.isMaximized():
+            return
+        cw, ch = CANVAS.get(self.settings["layout"], CANVAS["mobile"])
+        scr = (self.screen_() or QGuiApplication.primaryScreen()).availableGeometry()
+        h = int(scr.height() * 0.90)
+        w = int(h * cw / ch)
+        if w > scr.width() * 0.92:
+            w = int(scr.width() * 0.92)
+            h = int(w * ch / cw)
+        self.resize(w, h)
+        self.move(scr.x() + (scr.width() - w) // 2, scr.y() + (scr.height() - h) // 2)
+
+    def screen_(self):
+        try:
+            return self.screen()
+        except Exception:
+            return None
 
     def toggle_fullscreen(self):
-        self.showNormal() if self.isFullScreen() else self.showFullScreen()
+        if self.isFullScreen():
+            self.showNormal()
+            self.fit_window()
+        else:
+            self.showFullScreen()
 
 
 def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
+    app.setOrganizationName("FinancialOdyssey")
     app.setApplicationName("Financial Odyssey")
     win = MainWindow()
     win.show()
