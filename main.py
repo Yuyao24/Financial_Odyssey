@@ -22,7 +22,7 @@ import random
 import sys
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, QRect, QPoint, QPointF, QSize, QStandardPaths
-from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QPainter, QPen, QBrush, QGuiApplication, QTransform, QShortcut, QKeySequence, QPainterPath, QRegion)
+from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QPainter, QPen, QBrush, QGuiApplication, QTransform, QShortcut, QKeySequence, QPainterPath, QRegion, QLinearGradient)
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QFrame, QLabel,
                              QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QStackedWidget, QGraphicsView, QGraphicsScene,
@@ -82,7 +82,14 @@ class LifeGame:
     CREDIT_BANDS = (800, 700, 600, 450, 300)   # crossing below one of these triggers the warning popup
     HISTORY_CAP_TURNS = 20         # 5 years of history ...
     HISTORY_CAP = 700              # ... before you can pass 700
-    REBUILD_SCORE = 450            # below this, on-time payments rebuild faster (+10)
+    REBUILD_SCORE = 450            # below this, on-time payments rebuild faster
+    # On-time payment gains by band: (paid in full, paid extra, minimum only, minimum with card >90% used)
+    PAY_GAINS = {"rebuild": (12, 10, 5, 0), "building": (7, 5, 2, 0),
+                 "established": (3, 2, 1, 0), "very_high": (1, 0, 0, 0)}
+    STREAK_BONUS = 2               # building band, 4+ on-time quarters in a row, paid in full or extra
+    HIGH_UTILIZATION = 0.90
+    QUALITY_LABEL = {"full": "paid in full", "more": "paid extra", "minimum": "minimum only",
+                     "maxed": "minimum, card over 90% used"}
     IRS_SCORE = 300
     IRS_TURNS = 8                  # strikes = quarters under 300 while STILL missing/late on payments
     DEPRESSION_TURNS = 4
@@ -177,10 +184,11 @@ class LifeGame:
          "Overdraft lets your cash go negative (up to $1,000 here), but costs a $35 fee plus 5% interest "
          "each quarter. Go past the limit and the rest goes to your card or to collections."),
         ("If you only ever pay the minimum on your card...",
-         ["Your score stays safe, but interest keeps piling up on the rest",
+         ["You avoid penalties, but your score barely grows and interest piles up",
           "The debt is forgiven after a year",
           "You never pay any interest"],
-         "Minimum payments protect your score, but the remaining balance keeps growing with interest. "
+         "Minimum payments avoid a late or missed penalty, but lenders see a card that stays nearly full: "
+         "your score grows slowly (not at all above 90% used) while the balance collects interest. "
          "Pay in full whenever you can."),
         ("$1,000 on a card at 5% interest per quarter, unpaid for a year, becomes about...",
          ["$1,216", "$1,050", "$1,000"],
@@ -241,6 +249,8 @@ class LifeGame:
         self.credit_reasons = []
         self.millionaire_notified = False
         self.tutorial_step = -1          # >= 0 while the guided tutorial is running
+        self.history = []                # per-quarter snapshots for the Insights charts
+        self.moments = []                # (turn, "age Qn", text, tone) timeline entries
         self.scripted_events = []        # tutorial quarters use these instead of random events
         self.had_debt = False
         self.stats = {"interest": 0, "fees": 0, "on_time": 0, "late": 0, "missed": 0}
@@ -270,6 +280,24 @@ class LifeGame:
     def start(self):
         self.state = "main"
         self.add_log("Credit card approved! Your credit journey begins at a score of 550.", "good")
+        self.moment("Got your first credit card", "good")
+        self.snapshot()
+
+    # -------------------------------------------------------------- history --
+    def snapshot(self):
+        """One data point per quarter for the Insights charts."""
+        self.history.append({
+            "t": self.turns_played, "age": self.age_years, "q": self.quarter(),
+            "credit": self.credit_score, "nw": self.get_net_worth(), "cash": self.cash,
+            "inv": self.investments, "debt": self.card + self.loans + self.overdraft_used(),
+            "happy": self.happiness, "income": self.quarterly_income(), "ess": self.essentials_total(),
+        })
+
+    def moment(self, text, tone="info"):
+        """A notable life event, shown on the Insights timeline and as chart markers."""
+        self.moments.append((self.turns_played, f"{self.age_years} Q{self.quarter()}", text, tone))
+        if len(self.moments) > 300:
+            self.moments.pop(0)
 
     # -------------------------------------------------------------- helpers --
     def price(self, amount):
@@ -291,6 +319,7 @@ class LifeGame:
             self.achievements.append(key)
             name, desc = self.ACHIEVEMENTS[key]
             self.toasts.append((f"Achievement unlocked: {name} — {desc}", "gold"))
+            self.moment(f"Achievement: {name}", "gold")
 
     @staticmethod
     def tier_for(score):
@@ -320,6 +349,61 @@ class LifeGame:
 
     def card_available(self):
         return max(0, self.card_limit() - self.card)
+
+    def utilization(self):
+        return self.card / max(1, self.card_limit())
+
+    def payment_quality(self):
+        """How this quarter's payment will be judged if you advance now (None = no bill)."""
+        if self.min_due <= 0:
+            return None
+        paid, due = self.paid_this_qtr, self.min_due
+        if paid < due and not (self.card + self.loans == 0 and paid > 0):
+            return "late" if paid > 0 else "missing"
+        if self.paid_card_this_qtr >= self.stmt_card:
+            return "full"                       # statement cleared: lowest possible utilisation
+        if self.utilization() > self.HIGH_UTILIZATION:
+            return "maxed"
+        if paid >= due * 2:
+            return "more"
+        return "minimum"
+
+    def credit_gain_for(self, quality, score=None, streak=None):
+        """Points an on-time payment of this quality earns (before the 5-year history cap)."""
+        score = self.credit_score if score is None else score
+        streak = self.streak + 1 if streak is None else streak
+        if score >= 800:
+            band = "very_high"
+        elif score >= 700:
+            band = "established"
+        elif score < self.REBUILD_SCORE:
+            band = "rebuild"
+        else:
+            band = "building"
+        gain = self.PAY_GAINS[band][("full", "more", "minimum", "maxed").index(quality)]
+        if band == "building" and quality in ("full", "more") and streak >= 4:
+            gain += self.STREAK_BONUS
+        return gain
+
+    def projected_credit_change(self):
+        """(quality, points) if you advanced right now; history cap applied."""
+        q = self.payment_quality()
+        if q is None:
+            return None, 0
+        if q == "late":
+            return q, -20
+        if q == "missing":
+            return q, -50
+        gain = self.credit_gain_for(q)
+        if self.history_capped():
+            gain = min(gain, max(0, self.HISTORY_CAP - self.credit_score))
+        return q, gain
+
+    def full_payment_gain(self):
+        gain = self.credit_gain_for("full")
+        if self.history_capped():
+            gain = min(gain, max(0, self.HISTORY_CAP - self.credit_score))
+        return gain
 
     def loan_capacity(self):
         return self.tier()[5]
@@ -386,7 +470,7 @@ class LifeGame:
         return int(min(nw, nw * 0.25) - self.DEATH_PENALTY)
 
     # --------------------------------------------------------- credit score --
-    def _credit(self, status, reason):
+    def _credit(self, status, reason, quality="full"):
         before = self.credit_score
         if status == "missing":
             delta = -50
@@ -402,14 +486,9 @@ class LifeGame:
             self.streak += 1
             self.best_streak = max(self.best_streak, self.streak)
             self.stats["on_time"] += 1
-            if before >= 800:
-                delta = self.rng.choice([0, 1])            # very high score: +0 / +1
-            elif before >= 700:
-                delta = 2                                  # established: +2
-            elif before < self.REBUILD_SCORE:
-                delta = 10                                 # rebuilding from a damaged score: +10
-            else:
-                delta = 5 + (2 if self.streak >= 4 else 0)  # building: +5, +2 streak bonus
+            delta = self.credit_gain_for(quality, before, self.streak)
+            if before >= 800 and delta:
+                delta = self.rng.choice([0, 1])            # very high score: +0 or +1 per payment
         new = max(0, min(1000, before + delta))
         capped = False
         if self.history_capped() and new > self.HISTORY_CAP:
@@ -438,6 +517,9 @@ class LifeGame:
         if t_after[0] > t_before[0]:
             self.toasts.append((f"Credit tier up: {t_after[1]}! Card limit {money(self.card_limit())}, "
                                 f"loan rate {t_after[2]:.2%}/qtr", "good"))
+            self.moment(f"Credit rose to {t_after[1]} ({new})", "good")
+        elif t_after[0] < t_before[0]:
+            self.moment(f"Credit fell to {t_after[1]} ({new})", "bad")
 
     @classmethod
     def band_of(cls, score):
@@ -485,8 +567,8 @@ class LifeGame:
             "<li><b>Lower final score</b> — your retirement multiplier is 0.5 + score/2000.</li></ul>"
             "<p><b style='color:#4ADE80'>How to rebuild it</b></p><ul>"
             "<li>Pay at least the <b>minimum due</b> shown on the dashboard every quarter <i>before</i> "
-            "pressing Advance: +10 per on-time payment while rebuilding (under 450), otherwise +5 "
-            "(+2 bonus on a 4-quarter streak).</li>"
+            "pressing Advance — and pay the <b>full statement</b> whenever you can: it's worth far more than "
+            "the minimum, and a card kept over 90% full earns nothing.</li>"
             "<li>Paying something but less than the minimum is still <b>late (-20)</b>; paying nothing is "
             "<b>missed (-50)</b>.</li>"
             "<li>Keep an emergency cash cushion so surprise bills never go to collections (-50).</li>"
@@ -610,8 +692,10 @@ class LifeGame:
         if self.min_due <= 0:
             return
         paid, due = self.paid_this_qtr, self.min_due
-        if paid >= due or (self.card + self.loans == 0 and paid > 0):
-            self._credit("on_time", f"On-time payment ({money(paid)} paid, {money(due)} minimum)")
+        q = self.payment_quality()
+        if q in ("full", "more", "minimum", "maxed"):
+            self._credit("on_time", f"On-time payment, {self.QUALITY_LABEL[q]} ({money(paid)} paid, "
+                                    f"{money(due)} minimum, card {self.utilization():.0%} used)", quality=q)
         elif paid > 0:
             self._credit("late", f"Late payment: paid only {money(paid)} of the {money(due)} minimum")
         else:
@@ -646,6 +730,7 @@ class LifeGame:
         self.stats["fees"] += fee
         self._note_debt()
         self._credit("missing", f"{label}: {money(amount)} unpaid and sent to collections (+{money(fee)} fee)")
+        self.moment(f"{label} sent to collections", "bad")
 
     def _forced_payment(self, amount, label):
         """Compulsory costs: (card if autopay) -> cash -> overdraft -> card -> collections."""
@@ -713,6 +798,8 @@ class LifeGame:
             self.state = "game_over"
             self.end_reason = "RETIREMENT"
             self.unlock("golden")
+            self.moment("Retired at 65", "good")
+            self.snapshot()
             return
 
         self.price_index *= 1 + self.INFLATION_QTR
@@ -743,6 +830,7 @@ class LifeGame:
                 change = -int(self.investments * self.rng.uniform(*self.CRASH_RANGE))
                 self.investments = max(0, self.investments + change)
                 self.add_log(f"MARKET CRASH! Investments fell {money(-change)}", "bad")
+                self.moment(f"Market crash: investments −{money(-change)}", "bad")
                 self.unlock("storm")
             else:
                 change = int(self.investments * self.rng.uniform(*self.INVEST_RANGE))
@@ -752,6 +840,7 @@ class LifeGame:
 
         self._post_statement()
         self._milestones()
+        self.snapshot()
 
         if self.happiness <= 0:
             self.zero_happiness_turns += 1
@@ -1177,9 +1266,11 @@ class LifeGame:
                 self.has_pet = True
             elif k == "layoff":
                 self.layoff_turns, self.layoff_mult = v
+                self.moment("Laid off", "bad")
             elif k == "course":
                 self.courses_taken += 1
                 self.base_income += self.COURSE_BONUS
+                self.moment(f"Earned certification {self.courses_taken}/{self.MAX_COURSES}", "good")
                 if self.courses_taken >= self.MAX_COURSES:
                     self.unlock("learner")
             elif k == "limit_bonus":
@@ -1285,9 +1376,15 @@ class LifeGame:
             "<li>Each quarter your card and loans post a <b>statement</b> with a <b>minimum payment due</b> "
             "(4% of the card balance, 8% of loans). It's shown on the dashboard. A small minimum keeps "
             "your score safe — but whatever you don't pay keeps collecting interest.</li>"
-            "<li><b style='color:#4ADE80'>On time</b> (paid at least the minimum before advancing): "
-            "+10 while rebuilding (under 450); +5 from 450-699 (+2 bonus on a 4+ quarter streak); "
-            "+2 from 700-799; +0 or +1 at 800+.</li>"
+            "<li><b style='color:#4ADE80'>On time</b> (paid at least the minimum before advancing) — how much "
+            "it helps depends on <b>how much of your card you're still using</b> (utilisation):</li></ul>"
+            "<table cellspacing='0' cellpadding='5' width='100%'>"
+            "<tr style='color:#8A97B1'><td>Payment</td><td>Under 450</td><td>450-699</td><td>700-799</td><td>800+</td></tr>"
+            "<tr><td><b>Paid in full</b> (utilisation low)</td><td>+12</td><td>+7*</td><td>+3</td><td>+0/+1</td></tr>"
+            "<tr><td><b>Paid extra</b> (2× minimum or more)</td><td>+10</td><td>+5*</td><td>+2</td><td>+0</td></tr>"
+            "<tr><td><b>Minimum</b>, card 90% used or less</td><td>+5</td><td>+2</td><td>+1</td><td>+0</td></tr>"
+            "<tr><td><b>Minimum</b>, card over 90% used</td><td>+0</td><td>+0</td><td>+0</td><td>+0</td></tr>"
+            "</table><p style='color:#8A97B1'>* +2 bonus once you're on a 4+ quarter on-time streak.</p><ul>"
             "<li><b style='color:#FBBF24'>Late</b> (paid something, but less than the minimum): -20.</li>"
             "<li><b style='color:#F87171'>Missed</b> (paid nothing) or a bill sent to collections: -50.</li>"
             "<li>Swiping your card or carrying a balance does <b>not</b> lower your score — only unpaid "
@@ -1402,6 +1499,8 @@ def make_font(px, weight=W_NORMAL):
     f.setPixelSize(int(px))            # pixel sizes => identical layout at any DPI
     f.setWeight(weight)
     f.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+    if hasattr(f, "setFeature"):
+        f.setFeature(QFont.Tag("tnum"), 1)   # tabular figures: every digit has the same width
     return f
 
 
@@ -1509,6 +1608,21 @@ def draw_icon(p, kind, rect, color):
                         QPointF(cx + s * 0.28, cy + s * 0.38), QPointF(cx + s * 0.28, cy - s * 0.12)])
     elif kind == "play":
         p.drawPolygon([QPointF(cx - s * 0.22, cy - s * 0.34), QPointF(cx + s * 0.34, cy), QPointF(cx - s * 0.22, cy + s * 0.34)])
+    elif kind == "back":
+        p.drawLine(QPointF(cx + s * 0.36, cy), QPointF(cx - s * 0.34, cy))
+        p.drawPolyline([QPointF(cx - s * 0.04, cy - s * 0.3), QPointF(cx - s * 0.36, cy), QPointF(cx - s * 0.04, cy + s * 0.3)])
+    elif kind == "chart":
+        p.drawPolyline([QPointF(cx - s * 0.42, cy - s * 0.42), QPointF(cx - s * 0.42, cy + s * 0.4),
+                        QPointF(cx + s * 0.44, cy + s * 0.4)])
+        p.drawPolyline([QPointF(cx - s * 0.28, cy + s * 0.16), QPointF(cx - s * 0.06, cy - s * 0.06),
+                        QPointF(cx + s * 0.1, cy + s * 0.08), QPointF(cx + s * 0.38, cy - s * 0.28)])
+    elif kind == "trophy":
+        p.drawArc(QRectF(cx - s * 0.3, cy - s * 0.46, s * 0.6, s * 0.7), 180 * 16, 180 * 16)
+        p.drawLine(QPointF(cx - s * 0.3, cy - s * 0.11), QPointF(cx - s * 0.3, cy - s * 0.42))
+        p.drawLine(QPointF(cx + s * 0.3, cy - s * 0.11), QPointF(cx + s * 0.3, cy - s * 0.42))
+        p.drawLine(QPointF(cx - s * 0.3, cy - s * 0.42), QPointF(cx + s * 0.3, cy - s * 0.42))
+        p.drawLine(QPointF(cx, cy + s * 0.24), QPointF(cx, cy + s * 0.38))
+        p.drawLine(QPointF(cx - s * 0.22, cy + s * 0.42), QPointF(cx + s * 0.22, cy + s * 0.42))
     elif kind == "replay":
         r = s * 0.34
         p.drawArc(QRectF(cx - r, cy - r, 2 * r, 2 * r), 60 * 16, 290 * 16)
@@ -1557,12 +1671,13 @@ class FitLabel(QLabel):
         self._fit()
 
     def _fit(self):
+        text = self.text()
         avail = self.width() - 4 - self.contentsMargins().left() - self.contentsMargins().right()
         if avail <= 0:
             return
         px = self._px
         f = make_font(px, self._weight)
-        while px > self._min and QFontMetrics(f).horizontalAdvance(self.text()) > avail:
+        while px > self._min and QFontMetrics(f).horizontalAdvance(text) > avail:
             px -= 1
             f.setPixelSize(px)
         if self.font().pixelSize() != px:
@@ -2285,10 +2400,11 @@ TIPS = {
                "minimum payment is due. Loans are cheaper than a credit card but need a 450+ score."),
     "pay": ("You paid debt", "Payments go to your highest-interest balance first (the card). Anything paid this "
             "quarter counts toward your minimum payment."),
-    "pay_min": ("Minimum covered", "This quarter will count as an ON-TIME payment when you advance (+credit). Paying the "
-                "full statement also avoids card interest."),
-    "pay_all": ("Debt cleared", "Paying the whole statement means no card interest this quarter (grace period) — the "
-                "smartest way to use a credit card."),
+    "pay_min": ("Minimum covered", "No late or missed penalty this quarter. But a minimum payment grows your score "
+                "slowly — and not at all if your card is over 90% used. Pay in full for the biggest boost and zero "
+                "interest."),
+    "pay_all": ("Debt cleared", "Paying the whole statement gives the biggest credit boost and means no card interest "
+                "this quarter (grace period) — the smartest way to use a credit card."),
     "buy": ("Happiness refilled", "Leisure costs real money, so budget for it every quarter. Remember: 0 happiness for "
             "the start of burnout — 4 warnings and it's game over."),
     "autopay": ("Essentials on your card", "Rent, food and bills will now be charged to your card each quarter. Pay the "
@@ -2348,9 +2464,10 @@ class Tutorial:
                       "<b>before</b> advancing: on time = credit up, late = −20, missed = −50."),
             dict(title="Pay your bill", target=lambda: d().b_all, wait=("pay_all", "pay_min", "pay"),
                  skip=lambda: g().remaining_due() <= 0 or g().cash <= 0,
-                 body="<b>Pay off all</b> clears the card: your score goes up <i>and</i> you pay zero interest. "
-                      "<b>Pay minimum</b> only protects your score — the rest of the balance keeps "
-                      "collecting interest.", hint="Try it: press Pay off all."),
+                 body="<b>Pay off all</b> clears the card: the biggest credit boost <i>and</i> zero interest. "
+                      "<b>Pay minimum</b> only avoids a penalty — your score barely moves (not at all if the card "
+                      "is over 90% used) and the rest keeps collecting interest.",
+                 hint="Try it: press Pay off all."),
             dict(title="Activity log", target=lambda: d().log_box,
                  body="Every paycheck, bill, interest charge and decision is recorded here, newest first."),
             dict(title="Choose an amount", target=lambda: d().amount_box, on_show=lambda: d().amount.setValue(500),
@@ -2375,7 +2492,7 @@ class Tutorial:
                       "lenders want a long history."),
             dict(title="Settings, help & quitting", target=lambda: d().toolbar_box,
                  body="<b>Settings</b>: light/dark theme, mobile/desktop layout, fullscreen and replaying this "
-                      "tutorial. <b>Credit 101</b> opens the full guide. <b>Save & quit</b> any time — your "
+                      "tutorial. <b>Stats</b> shows charts of your credit score, net worth and more over time. <b>Credit 101</b> opens the full guide. <b>Save & quit</b> any time — your "
                       "game also saves automatically after every move."),
             dict(title="You're ready!", target=None,
                  body="From now on events are real. Pay your bills, keep happiness up, invest what you can — "
@@ -2644,7 +2761,7 @@ class Tile(Card):
         lay.addWidget(self.sub)
 
     def set(self, value, color, sub, sub_color=None):
-        self.val.setText(value)
+        self.val.setText(money(value) if isinstance(value, (int, float)) else value)
         set_color(self.val, color)
         self.sub.setText(sub)
         set_color(self.sub, sub_color or T["muted"])
@@ -2672,6 +2789,8 @@ class Dashboard(QWidget):
         self.guide_btn.clicked.connect(self.ui.show_guide)
         self.quit_btn = WrapButton("Save & quit", "red", px, W_BOLD, height=h, icon="power")
         self.quit_btn.clicked.connect(self.ui.win.close)
+        self.stats_btn = WrapButton("Insights" if vertical else "Stats", "purple", px, W_BOLD, height=h, icon="chart")
+        self.stats_btn.clicked.connect(lambda: self.ui.open_insights())
         return box, [self.settings_btn, self.guide_btn, self.quit_btn]
 
     def _build_mobile(self):
@@ -2689,10 +2808,13 @@ class Dashboard(QWidget):
         tl = QHBoxLayout(self.toolbar_box)
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(12)
-        s.setFixedWidth(220)
-        gd.setFixedWidth(230)
-        q.setFixedWidth(240)
+        s.setFixedWidth(196)
+        gd.setFixedWidth(182)
+        gd.setText("Guide")
+        self.stats_btn.setFixedWidth(170)
+        q.setFixedWidth(230)
         tl.addWidget(s)
+        tl.addWidget(self.stats_btn)
         tl.addWidget(gd)
         tl.addStretch(1)
         tl.addWidget(q)
@@ -2749,6 +2871,7 @@ class Dashboard(QWidget):
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(16)
         tl.addWidget(s)
+        tl.addWidget(self.stats_btn)
         tl.addWidget(gd)
         theme_dark = self.ui.win.settings["theme"] == "dark"
         self.theme_btn = WrapButton("Light mode" if theme_dark else "Dark mode", "soft", 24, W_SEMI,
@@ -3088,17 +3211,17 @@ class Dashboard(QWidget):
         self.buy_btn.setEnabled(g.cash >= cost and g.happiness < 100)
 
         od = g.overdraft_used()
-        self.t_cash.set(money(g.cash), T["red"] if g.cash < 0 else T["green"],
+        self.t_cash.set(g.cash, T["red"] if g.cash < 0 else T["green"],
                         f"Overdraft {money(od)} / {money(g.OVERDRAFT_LIMIT)}" if od else
                         f"Overdraft limit {money(g.OVERDRAFT_LIMIT)}", T["red"] if od else None)
-        self.t_inv.set(money(g.investments), T["blue"],
+        self.t_inv.set(g.investments, T["blue"],
                        "No withdrawal fee (60+)" if g.withdraw_fee_rate() == 0 else "5% fee to withdraw before 60")
         util = g.card / max(1, g.card_limit())
-        self.t_card.set(money(g.card), T["purple"] if g.card <= g.card_limit() else T["red"],
-                        f"{money(g.card_available())} free of {money(g.card_limit())}",
-                        T["red"] if util > 0.9 else None)
+        self.t_card.set(g.card, T["purple"] if g.card <= g.card_limit() else T["red"],
+                        f"{util:.0%} used  ·  {money(g.card_limit())} limit",
+                        T["red"] if util > g.HIGH_UTILIZATION else (T["amber"] if util > 0.30 else None))
         cap = g.loan_capacity()
-        self.t_loan.set(money(g.loans), T["amber"] if g.loans else T["dim"],
+        self.t_loan.set(g.loans, T["amber"] if g.loans else T["dim"],
                         f"Can borrow {money(g.loan_room())}" if cap else "Loans need a 450+ score",
                         None if cap else T["red"])
         inc_sub = f"Certifications {g.courses_taken}/{g.MAX_COURSES}"
@@ -3106,10 +3229,10 @@ class Dashboard(QWidget):
             inc_sub = f"{int(g.layoff_mult * 100)}% pay for {g.layoff_turns} more qtr"
         elif not g.has_car:
             inc_sub += "  ·  no car −10%"
-        self.t_inc.set(money(g.quarterly_income()), T["gold"], inc_sub, T["amber"] if g.layoff_turns else None)
+        self.t_inc.set(g.quarterly_income(), T["gold"], inc_sub, T["amber"] if g.layoff_turns else None)
         items = g.essentials_breakdown()
         adj = dict(items).get("Credit premium", 0) or dict(items).get("Credit discount", 0)
-        self.t_ess.set(money(g.essentials_total()), T["pink"],
+        self.t_ess.set(g.essentials_total(), T["pink"],
                        (f"Incl. credit {'premium +' if adj > 0 else 'discount −'}{money(abs(adj))}" if adj
                         else "Rent, food & bills — compulsory"),
                        T["red"] if adj > 0 else (T["green"] if adj < 0 else None))
@@ -3129,9 +3252,13 @@ class Dashboard(QWidget):
             self.bills.set_kind("tint_green")
             fg = muted = T["tints"]["green"][2]
             self.due_val.setText(f"{money(g.min_due)}  ✓ paid")
-            extra = ("Statement fully paid — no card interest." if g.paid_card_this_qtr >= g.stmt_card
-                     else f"Pay the full {money(g.stmt_card)} statement to skip card interest.")
-            self.due_note.setText(f"Paid {money(g.paid_this_qtr)} this quarter. {extra}")
+            q, pts = g.projected_credit_change()
+            if q == "full":
+                extra = f"Paid in full: credit {pts:+d}, no card interest."
+            else:
+                extra = (f"{g.QUALITY_LABEL[q].capitalize()}: credit {pts:+d}. Pay the full {money(g.stmt_card)} "
+                         f"statement for {g.full_payment_gain():+d} and no interest.")
+            self.due_note.setText(extra)
             self.due_chip.setText("ON TIME")
             self.due_chip.set_style(T["green"], T["solid_green_text"])
         else:
@@ -3139,7 +3266,8 @@ class Dashboard(QWidget):
             fg = muted = T["tints"]["red"][2]
             self.due_val.setText(f"{money(rem)} still due")
             self.due_note.setText(f"Minimum {money(g.min_due)}, paid {money(g.paid_this_qtr)}. Advancing now = "
-                                  f"{'LATE (−20)' if g.paid_this_qtr else 'MISSED (−50)'}.")
+                                  f"{'LATE (−20)' if g.paid_this_qtr else 'MISSED (−50)'}. "
+                                  f"Pay in full: {g.full_payment_gain():+d}.")
             self.due_chip.setText("UNPAID")
             self.due_chip.set_style(T["red"], T["danger_text"])
         set_color(self.due_val, fg)
@@ -3220,8 +3348,11 @@ class GameOverPage(QWidget):
         row.setSpacing(16)
         menu = WrapButton("Main menu", "outline", 26, W_SEMI, height=88, icon="home")
         menu.clicked.connect(ui.to_menu)
+        charts = WrapButton("Life in charts", "purple", 26, W_BOLD, height=88, icon="chart")
+        charts.clicked.connect(lambda: ui.open_insights())
         quit_ = WrapButton("Quit", "red", 26, W_BOLD, height=88, icon="power")
         quit_.clicked.connect(ui.win.close)
+        row.addWidget(charts)
         row.addWidget(menu)
         row.addWidget(quit_)
 
@@ -3302,6 +3433,487 @@ class GameOverPage(QWidget):
             self.ach.setText("No achievements this time.")
 
 
+# ------------------------------------------------------------------ charts ---
+def nice_ticks(lo, hi, n=5):
+    if hi <= lo:
+        hi = lo + 1
+    span = hi - lo
+    raw = span / n
+    mag = 10 ** math.floor(math.log10(raw))
+    step = mag
+    for m in (1, 2, 2.5, 5, 10):
+        step = m * mag
+        if span / step <= n:
+            break
+    v = math.floor(lo / step) * step
+    ticks = []
+    while v <= hi + step * 0.001:
+        ticks.append(v)
+        v += step
+    return ticks
+
+
+def short_money(v):
+    a = abs(v)
+    sign = "-" if v < 0 else ""
+    if a >= 1_000_000:
+        return f"{sign}${a / 1_000_000:.1f}M"
+    if a >= 10_000:
+        return f"{sign}${a / 1000:.0f}k"
+    if a >= 1000:
+        return f"{sign}${a / 1000:.1f}k"
+    return f"{sign}${a:.0f}"
+
+
+class LineChart(QWidget):
+    """Line/area chart with gridlines, shaded bands, event markers and a hover tooltip."""
+
+    L, R, T, B = 120, 34, 26, 64
+
+    def __init__(self):
+        super().__init__()
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.labels, self.series, self.bands, self.markers = [], [], [], []
+        self.fmt, self.tick_fmt = money, short_money
+        self.y_range = None
+        self.hover = None
+        self.empty_text = "Advance a few quarters to see your history here."
+
+    def set_data(self, labels, series, fmt=money, tick_fmt=short_money, bands=(), markers=(), y_range=None):
+        """series: list of (name, values, color, filled)."""
+        self.labels, self.series = labels, series
+        self.fmt, self.tick_fmt = fmt, tick_fmt
+        self.bands, self.markers, self.y_range = list(bands), list(markers), y_range
+        self.hover = None
+        self.update()
+
+    # ---- geometry
+    def _plot(self):
+        return QRectF(self.L, self.T, max(10, self.width() - self.L - self.R), max(10, self.height() - self.T - self.B))
+
+    def _yrange(self):
+        if self.y_range:
+            return self.y_range
+        vals = [v for _, vs, _, _ in self.series for v in vs]
+        lo, hi = min(vals + [0]), max(vals + [1])
+        pad = (hi - lo) * 0.08 or 1
+        return lo - (pad if lo < 0 else 0), hi + pad
+
+    def _x(self, i, plot, n):
+        return plot.left() + (plot.width() * i / (n - 1) if n > 1 else plot.width() / 2)
+
+    def mouseMoveEvent(self, e):
+        n = len(self.labels)
+        if n < 2:
+            return
+        plot = self._plot()
+        x = e.position().x()
+        i = round((x - plot.left()) / plot.width() * (n - 1))
+        i = max(0, min(n - 1, i))
+        if i != self.hover:
+            self.hover = i
+            self.update()
+
+    def leaveEvent(self, e):
+        self.hover = None
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        n = len(self.labels)
+        plot = self._plot()
+        if n < 2 or not self.series:
+            p.setPen(QColor(T["muted"]))
+            p.setFont(make_font(26, W_MED))
+            p.drawText(QRectF(self.rect()), AL_C, self.empty_text)
+            p.end()
+            return
+        lo, hi = self._yrange()
+        ticks = [t for t in nice_ticks(lo, hi) if lo <= t <= hi] or [lo, hi]
+
+        def y(v):
+            return plot.bottom() - (v - lo) / (hi - lo) * plot.height()
+
+        # bands (e.g. credit tiers, danger zone)
+        for b0, b1, color, text in self.bands:
+            top, bot = y(min(hi, b1)), y(max(lo, b0))
+            if bot <= top:
+                continue
+            c = QColor(color)
+            c.setAlpha(30)
+            p.fillRect(QRectF(plot.left(), top, plot.width(), bot - top), c)
+            if text and bot - top > 30:
+                c.setAlpha(200)
+                p.setPen(c)
+                p.setFont(make_font(18, W_BOLD))
+                p.drawText(QRectF(plot.right() - 260, top + 4, 250, 26),
+                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, text)
+        # grid + y labels
+        p.setFont(make_font(19, W_MED))
+        for t in ticks:
+            yy = y(t)
+            p.setPen(QPen(QColor(T["border"]), 1.5))
+            p.drawLine(QPointF(plot.left(), yy), QPointF(plot.right(), yy))
+            p.setPen(QColor(T["muted"]))
+            p.drawText(QRectF(0, yy - 14, self.L - 16, 28), AL_R, self.tick_fmt(t))
+        if lo < 0 < hi:
+            p.setPen(QPen(QColor(T["border_strong"]), 2, Qt.PenStyle.DashLine))
+            p.drawLine(QPointF(plot.left(), y(0)), QPointF(plot.right(), y(0)))
+        # x labels (ages)
+        p.setPen(QColor(T["muted"]))
+        count = min(7, n)
+        shown = set()
+        for k in range(count):
+            i = round(k * (n - 1) / (count - 1)) if count > 1 else 0
+            if i in shown:
+                continue
+            shown.add(i)
+            xx = self._x(i, plot, n)
+            p.drawText(QRectF(xx - 70, plot.bottom() + 14, 140, 30), AL_C, self.labels[i])
+
+        # series
+        p.save()
+        p.setClipRect(QRectF(plot.left() - 10, 0, plot.width() + 20, self.height()))
+        for name, vals, color, filled in self.series:
+            path = QPainterPath()
+            for i, v in enumerate(vals):
+                pt = QPointF(self._x(i, plot, n), y(v))
+                if i == 0:
+                    path.moveTo(pt)
+                else:
+                    path.lineTo(pt)
+            if filled:
+                area = QPainterPath(path)
+                area.lineTo(QPointF(self._x(n - 1, plot, n), y(max(lo, 0) if lo < 0 < hi else lo)))
+                area.lineTo(QPointF(self._x(0, plot, n), y(max(lo, 0) if lo < 0 < hi else lo)))
+                area.closeSubpath()
+                grad = QLinearGradient(0, plot.top(), 0, plot.bottom())
+                c1, c2 = QColor(color), QColor(color)
+                c1.setAlpha(90)
+                c2.setAlpha(5)
+                grad.setColorAt(0, c1)
+                grad.setColorAt(1, c2)
+                p.fillPath(area, QBrush(grad))
+            p.setPen(QPen(QColor(color), 4.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+        # markers on the first series
+        if self.series:
+            vals = self.series[0][1]
+            for i, text, color in self.markers:
+                if 0 <= i < n:
+                    p.setPen(QPen(QColor(T["card"]), 3))
+                    p.setBrush(QColor(color))
+                    p.drawEllipse(QPointF(self._x(i, plot, n), y(vals[i])), 9, 9)
+        p.restore()
+
+        # hover crosshair + tooltip
+        if self.hover is not None:
+            i = self.hover
+            xx = self._x(i, plot, n)
+            p.setPen(QPen(QColor(T["text"]), 1.5, Qt.PenStyle.DashLine))
+            p.drawLine(QPointF(xx, plot.top()), QPointF(xx, plot.bottom()))
+            rows = [(self.labels[i], T["text"], True)]
+            for name, vals, color, _ in self.series:
+                p.setPen(QPen(QColor(T["card"]), 3))
+                p.setBrush(QColor(color))
+                p.drawEllipse(QPointF(xx, y(vals[i])), 8, 8)
+                rows.append((f"{name}: {self.fmt(vals[i])}", color, False))
+            for mi, text, color in self.markers:
+                if mi == i:
+                    rows.append((text, color, False))
+            f_b, f_n = make_font(21, W_BOLD), make_font(21, W_SEMI)
+            w = max(QFontMetrics(f_b if b else f_n).horizontalAdvance(t) for t, _, b in rows) + 52
+            h = 34 * len(rows) + 22
+            bx = xx + 20 if xx + 20 + w < self.width() else xx - 20 - w
+            by = max(4, min(self.height() - h - 4, plot.top() + 10))
+            p.setPen(QPen(QColor(T["border_strong"]), 1.5))
+            p.setBrush(QColor(T["modal"]))
+            p.drawRoundedRect(QRectF(bx, by, w, h), 16, 16)
+            for k, (t, color, bold) in enumerate(rows):
+                ty = by + 12 + k * 34
+                if not bold:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(color))
+                    p.drawEllipse(QPointF(bx + 22, ty + 17), 6, 6)
+                p.setPen(QColor(T["text"]))
+                p.setFont(f_b if bold else f_n)
+                p.drawText(QRectF(bx + (16 if bold else 38), ty, w - 40, 34), AL_L, t)
+        p.end()
+
+
+class InsightsPage(QWidget):
+    """Charts of your whole financial life, key moments and achievements."""
+
+    TABS = [("Net worth", "nw"), ("Credit", "credit"), ("Money", "money"), ("Happiness", "happy"),
+            ("Awards", "awards")]
+
+    def __init__(self, ui, desktop):
+        super().__init__()
+        self.ui = ui
+        self.desktop = desktop
+        self.tab = "nw"
+
+        top = QHBoxLayout()
+        top.setSpacing(20)
+        self.back_btn = WrapButton("Back", "outline", 24, W_SEMI, height=72, icon="back")
+        self.back_btn.setFixedWidth(200)
+        self.back_btn.clicked.connect(ui.close_insights)
+        top.addWidget(self.back_btn)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        titles.addWidget(label("<span style='font-weight:300'>Your life </span><b>in charts</b>", 52, W_NORMAL, rich=True))
+        self.subtitle = FitLabel("", 22, W_MED, T["muted"])
+        titles.addWidget(self.subtitle)
+        top.addLayout(titles, 1)
+
+        # summary tiles
+        tile_h, tile_px = (150, 42) if desktop else (118, 36)
+        self.s_nw, self.s_peak, self.s_credit = Tile("Net worth", tile_h, tile_px), Tile("Peak net worth", tile_h, tile_px), Tile("Credit score", tile_h, tile_px)
+        self.s_ontime, self.s_interest, self.s_fees = Tile("On-time payments", tile_h, tile_px), Tile("Interest paid", tile_h, tile_px), Tile("Fees paid", tile_h, tile_px)
+        tiles = QWidget()
+        grid = QGridLayout(tiles)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(24 if desktop else 14)
+        cols = 2 if desktop else 3
+        for i, t in enumerate([self.s_nw, self.s_peak, self.s_credit, self.s_ontime, self.s_interest, self.s_fees]):
+            grid.addWidget(t, i // cols, i % cols)
+
+        # tabs
+        self.tabwrap = Card("segwrap")
+        self.tabwrap.setFixedHeight(84)
+        tl = QHBoxLayout(self.tabwrap)
+        tl.setContentsMargins(8, 8, 8, 8)
+        tl.setSpacing(6)
+        self.tab_btns = {}
+        for text, key in self.TABS:
+            b = WrapButton(text, "seg", 22, W_SEMI, height=68)
+            b.clicked.connect(lambda _=False, k=key: self.set_tab(k))
+            tl.addWidget(b)
+            self.tab_btns[key] = b
+
+        # chart card / awards card (stacked)
+        self.content = QStackedWidget()
+        chart_card = Card("card")
+        cl = QVBoxLayout(chart_card)
+        cl.setContentsMargins(36, 30, 36, 30)
+        cl.setSpacing(10)
+        self.chart_title = label("", 34, W_BOLD)
+        self.chart_desc = label("", 22, W_NORMAL, T["muted"], wrap=True)
+        self.legend = QHBoxLayout()
+        self.legend.setSpacing(24)
+        cl.addWidget(self.chart_title)
+        cl.addWidget(self.chart_desc)
+        cl.addLayout(self.legend)
+        self.chart = LineChart()
+        cl.addWidget(self.chart, 1)
+        cl.addWidget(label("Hover over the chart to see each quarter. Dots mark key moments.", 19, W_MED, T["dim"]))
+        self.content.addWidget(chart_card)
+
+        awards_card = Card("card")
+        al = QVBoxLayout(awards_card)
+        al.setContentsMargins(36, 30, 36, 30)
+        al.setSpacing(16)
+        self.awards_title = label("", 34, W_BOLD)
+        al.addWidget(self.awards_title)
+        grid_holder = QWidget()
+        self.awards_grid = QGridLayout(grid_holder)
+        self.awards_grid.setContentsMargins(0, 0, 14, 0)
+        self.awards_grid.setSpacing(16)
+        self.awards_grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+        ascroll = QScrollArea()
+        ascroll.setWidgetResizable(True)
+        ascroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        ascroll.setWidget(grid_holder)
+        al.addWidget(ascroll, 1)
+        self.content.addWidget(awards_card)
+
+        # key moments timeline
+        mc = Card("card")
+        ml = QVBoxLayout(mc)
+        ml.setContentsMargins(36, 28, 20, 24)
+        ml.setSpacing(10)
+        ml.addWidget(label("Key moments", 30, W_BOLD))
+        self.moments_lbl = label("", 22, W_NORMAL, wrap=True, rich=True)
+        self.moments_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        holder = QWidget()
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 14, 0)
+        hl.addWidget(self.moments_lbl)
+        hl.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(holder)
+        ml.addWidget(scroll)
+
+        if desktop:
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(96, 72, 96, 80)
+            lay.setSpacing(44)
+            lay.addLayout(top)
+            cols_l = QHBoxLayout()
+            cols_l.setSpacing(44)
+            left = QVBoxLayout()
+            left.setSpacing(44)
+            left.addWidget(tiles)
+            left.addWidget(mc, 1)
+            lw = QWidget()
+            lw.setLayout(left)
+            left.setContentsMargins(0, 0, 0, 0)
+            lw.setFixedWidth(900)
+            cols_l.addWidget(lw)
+            right = QVBoxLayout()
+            right.setSpacing(28)
+            right.addWidget(self.tabwrap)
+            right.addWidget(self.content, 1)
+            cols_l.addLayout(right, 1)
+            lay.addLayout(cols_l, 1)
+        else:
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(36, 36, 36, 36)
+            lay.setSpacing(20)
+            lay.addLayout(top)
+            lay.addWidget(tiles)
+            lay.addWidget(self.tabwrap)
+            lay.addWidget(self.content, 1)
+            mc.setFixedHeight(360)
+            lay.addWidget(mc)
+
+    # ------------------------------------------------------------------------
+    def set_tab(self, key):
+        self.tab = key
+        for k, b in self.tab_btns.items():
+            b.set_variant("segon" if k == key else "seg")
+        self._render_tab()
+
+    def refresh(self):
+        g = self.ui.game
+        h = g.history or [{"t": 0, "age": g.age_years, "q": g.quarter(), "credit": g.credit_score,
+                           "nw": g.get_net_worth(), "cash": g.cash, "inv": g.investments,
+                           "debt": g.total_debt(), "happy": g.happiness, "income": g.quarterly_income(),
+                           "ess": g.essentials_total()}]
+        self.back_btn.setText("Back" if g.state != "game_over" else "Results")
+        self.subtitle.setText(f"{len(h)} quarters recorded  ·  age {h[0]['age']} to {g.age_years}")
+        nw = g.get_net_worth()
+        year_ago = h[-5]["nw"] if len(h) >= 5 else h[0]["nw"]
+        diff = nw - year_ago
+        self.s_nw.set(nw, T["green"] if nw >= 0 else T["red"], f"{'+' if diff >= 0 else '−'}{money(abs(diff))} in the last year",
+                      T["green"] if diff >= 0 else T["red"])
+        peak = max([x["nw"] for x in h] + [nw])
+        peak_age = g.age_years if nw >= peak else next(x for x in h if x["nw"] == peak)["age"]
+        self.s_peak.set(peak, T["blue"], f"at age {peak_age}")
+        best = max([x["credit"] for x in h] + [g.credit_score])
+        self.s_credit.set(f"{g.credit_score}", score_color(g.credit_score), f"best {best}  ·  {g.tier()[1]}")
+        st = g.stats
+        total = st["on_time"] + st["late"] + st["missed"]
+        rate = st["on_time"] / total if total else 1.0
+        self.s_ontime.set(f"{rate:.0%}", T["green"] if rate >= 0.95 else (T["amber"] if rate >= 0.8 else T["red"]),
+                          f"{st['late']} late · {st['missed']} missed · best streak {g.best_streak}")
+        self.s_interest.set(st["interest"], T["red"] if st["interest"] else T["dim"], "money lost to interest")
+        self.s_fees.set(st["fees"], T["red"] if st["fees"] else T["dim"], "overdraft, late & other fees")
+
+        lines = []
+        for t, when, text, tone in reversed(g.moments[-150:]):
+            lines.append(f"<span style='color:{T['dim']}'>{esc(when)}</span>&nbsp;&nbsp;"
+                         f"<span style='color:{tone_color(tone)}'>{esc(text)}</span>")
+        self.moments_lbl.setText("<br>".join(lines) if lines else "Nothing yet — your story starts now.")
+        self._hist = h
+        self.set_tab(self.tab)
+
+    def _legend(self, items):
+        clear_layout(self.legend)
+        for name, color in items:
+            dot = QLabel()
+            dot.setFixedSize(18, 18)
+            dot.setStyleSheet(f"background:{color}; border-radius:9px;")
+            self.legend.addWidget(dot)
+            self.legend.addWidget(label(name, 21, W_SEMI, T["text2"]))
+        self.legend.addStretch(1)
+
+    def _render_tab(self):
+        g = self.ui.game
+        h = self._hist
+        labels = [f"Age {x['age']}" + (f" Q{x['q']}" if len(h) < 30 else "") for x in h]
+        idx = {x["t"]: i for i, x in enumerate(h)}
+
+        def marks(pred):
+            out = []
+            for t, when, text, tone in g.moments:
+                if t in idx and pred(text):
+                    out.append((idx[t], text, tone_color(tone)))
+            return out
+
+        if self.tab == "awards":
+            self.content.setCurrentIndex(1)
+            self._render_awards()
+            return
+        self.content.setCurrentIndex(0)
+        if self.tab == "nw":
+            self.chart_title.setText("Net worth")
+            self.chart_desc.setText("Cash + investments − debt. Steady saving and investing compounds; crashes, "
+                                    "interest and fees pull it down.")
+            self._legend([("Net worth", T["accent"])])
+            self.chart.set_data(labels, [("Net worth", [x["nw"] for x in h], T["accent"], True)],
+                                markers=marks(lambda s: "crash" in s.lower() or "laid off" in s.lower()
+                                              or "collections" in s.lower() or "Retired" in s))
+        elif self.tab == "credit":
+            self.chart_title.setText("Credit score")
+            self.chart_desc.setText("Shaded bands are credit tiers. Paying in full climbs fastest; a missed payment "
+                                    "costs 50 points.")
+            self._legend([("Credit score", T["purple"])])
+            bands = [(800, 1000, T["green"], "EXCELLENT"), (700, 800, T["lime"], "GOOD"), (600, 700, T["gold"], "FAIR"),
+                     (450, 600, T["amber"], "POOR"), (300, 450, T["red"], "VERY POOR"), (0, 300, T["red"], "IRS DANGER")]
+            vals = [x["credit"] for x in h]
+            lo = max(0, min(vals) - 60)
+            hi = min(1000, max(vals) + 60)
+            self.chart.set_data(labels, [("Credit", vals, T["purple"], False)], fmt=lambda v: f"{int(v)}",
+                                tick_fmt=lambda v: f"{int(v)}", bands=bands, y_range=(lo, hi),
+                                markers=marks(lambda s: s.startswith("Credit ") or "collections" in s.lower()))
+        elif self.tab == "money":
+            self.chart_title.setText("Cash, investments & debt")
+            self.chart_desc.setText("Where your money sits each quarter. Debt includes your card, loans and any overdraft.")
+            self._legend([("Cash", T["green"]), ("Investments", T["blue"]), ("Debt", T["red"])])
+            self.chart.set_data(labels, [("Investments", [x["inv"] for x in h], T["blue"], True),
+                                         ("Cash", [x["cash"] for x in h], T["green"], False),
+                                         ("Debt", [x["debt"] for x in h], T["red"], False)])
+        else:
+            self.chart_title.setText("Happiness")
+            self.chart_desc.setText(f"Below {g.HAPPY_RECOVER} you can't recover from burnout; each quarter at 0 is a "
+                                    "warning, and 4 is fatal.")
+            self._legend([("Happiness", T["pink"])])
+            self.chart.set_data(labels, [("Happiness", [x["happy"] for x in h], T["pink"], True)],
+                                fmt=lambda v: f"{int(v)}", tick_fmt=lambda v: f"{int(v)}",
+                                bands=[(0, g.HAPPY_RECOVER, T["red"], "BURNOUT ZONE")], y_range=(0, 100))
+
+    def _render_awards(self):
+        g = self.ui.game
+        clear_layout(self.awards_grid)
+        got = set(g.achievements)
+        self.awards_title.setText(f"Achievements  ·  {len(got)} / {len(g.ACHIEVEMENTS)}")
+        cols = 3 if self.desktop else 2
+        for i, (key, (name, desc)) in enumerate(g.ACHIEVEMENTS.items()):
+            unlocked = key in got
+            c = Card("tint_green" if unlocked else "soft")
+            if not unlocked:
+                c.setStyleSheet(f"QFrame#soft {{ border:2px dashed {T['border_strong']}; }}")
+            c.setFixedHeight(150 if self.desktop else 128)
+            cl = QHBoxLayout(c)
+            cl.setContentsMargins(24, 16, 24, 16)
+            cl.setSpacing(18)
+            fg = T["tints"]["green"][2] if unlocked else T["dim"]
+            cl.addWidget(IconWidget("trophy", 48, lambda col=fg: col))
+            tv = QVBoxLayout()
+            tv.setSpacing(4)
+            tv.addWidget(label(name, 25, W_BOLD, fg))
+            tv.addWidget(label(desc if unlocked else f"Locked — {desc}", 19, W_NORMAL,
+                               T["tints"]["green"][2] if unlocked else T["muted"], wrap=True))
+            cl.addLayout(tv, 1)
+            self.awards_grid.addWidget(c, i // cols, i % cols)
+
+
 # ---------------------------------------------------------------- controller --
 class GameUI(QWidget):
     def __init__(self, win, mode):
@@ -3323,7 +3935,8 @@ class GameUI(QWidget):
         self.start_page = StartPage(self, desktop)
         self.dash = Dashboard(self, desktop)
         self.over_page = GameOverPage(self, desktop)
-        for w in (self.start_page, self.dash, self.over_page):
+        self.insights = InsightsPage(self, desktop)
+        for w in (self.start_page, self.dash, self.over_page, self.insights):
             self.stack.addWidget(w)
 
         self.event_overlay = EventOverlay(self, self.choose, desktop)
@@ -3340,6 +3953,22 @@ class GameUI(QWidget):
     @property
     def game(self):
         return self.win.game
+
+    def switch_page(self, w):
+        if self.stack.currentWidget() is not w:
+            self.stack.setCurrentWidget(w)
+
+    def open_insights(self):
+        self.tut.coach.hide()
+        self.event_overlay.hide()
+        self.insights.refresh()
+        self.switch_page(self.insights)
+
+    def close_insights(self):
+        if self.game.state == "game_over":
+            self.switch_page(self.over_page)
+        else:
+            self.after(save=False)
 
     # ----------------------------------------------------------- navigation --
     def new_game(self):
@@ -3379,7 +4008,7 @@ class GameUI(QWidget):
         old = self.start_page
         self.start_page = StartPage(self, self.desktop)
         self.stack.insertWidget(0, self.start_page)
-        self.stack.setCurrentWidget(self.start_page)
+        self.switch_page(self.start_page)
         self.stack.removeWidget(old)
         old.deleteLater()
 
@@ -3483,10 +4112,10 @@ class GameUI(QWidget):
             self.tut.coach.hide()
             self.popup_queue = [q for q in self.popup_queue if q["title"] == "Credit 101"]
             self.over_page.show_game(g)
-            self.stack.setCurrentWidget(self.over_page)
+            self.switch_page(self.over_page)
             self.win.delete_save()
         elif g.state in ("main", "event"):
-            self.stack.setCurrentWidget(self.dash)
+            self.switch_page(self.dash)
             self.dash.refresh()
             if g.state == "event":
                 self.event_overlay.show_event(g)
