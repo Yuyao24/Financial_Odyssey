@@ -107,7 +107,8 @@ class LifeGame:
     COURSE_BONUS = 550
 
     MILLION = 1_000_000
-    DEATH_PENALTY = 100_000
+    IRS_DEATH_PENALTY = 100_000
+    DEPRESSION_DEATH_PENALTY = 25_000
 
     EVENT_DECK = {
         "festival": 3, "market": 2, "car": 2, "vacation": 2, "course": 3,
@@ -462,12 +463,39 @@ class LifeGame:
     def can_retire_early(self):
         return self.state == "main" and self.get_net_worth() >= self.MILLION
 
-    def final_score(self):
+    def credit_multiplier(self):
+        """Final-score multiplier from credit: 0.50 (Very Poor) up to 2.00 (900+).
+        Under 450: 0.50 · 450-599: 0.50 -> 1.00 · 600-699: exactly 1.00 · 700-899: 1.00 -> 2.00 · 900+: 2.00
+        """
+        score = self.credit_score
+        if score >= 900:
+            return 2.00
+        if score >= 700:
+            return 1.00 + (score - 700) / 200.0
+        if score >= 600:
+            return 1.00
+        if score >= 450:
+            return 0.50 + 0.50 * (score - 450) / 150.0
+        return 0.50
+
+    def raw_score(self):
+        """Net worth x credit multiplier (a negative net worth is not multiplied)."""
         nw = self.get_net_worth()
+        return int(nw * self.credit_multiplier()) if nw >= 0 else int(nw)
+
+    def death_penalty_amount(self):
+        """IRS seizure costs the full IRS penalty; so does burning out while you still have IRS strikes."""
+        if self.end_reason == "IRS_SEIZURE":
+            return self.IRS_DEATH_PENALTY
+        if self.end_reason == "DEPRESSION":
+            return self.IRS_DEATH_PENALTY if self.low_credit_turns > 0 else self.DEPRESSION_DEATH_PENALTY
+        return 0
+
+    def final_score(self):
+        raw = self.raw_score()
         if self.end_reason in ("RETIREMENT", "EARLY_RETIREMENT"):
-            multiplier = 0.5 + (self.credit_score / 2000)
-            return int(nw * multiplier) if nw >= 0 else int(nw)
-        return int(min(nw, nw * 0.25) - self.DEATH_PENALTY)
+            return raw
+        return int(min(raw, raw * 0.25) - self.death_penalty_amount())
 
     # --------------------------------------------------------- credit score --
     def _credit(self, status, reason, quality="full"):
@@ -564,7 +592,7 @@ class LifeGame:
             f"{(self.CREDIT_PRICING[ta[1]] - 1) * 100:+.0f}% on rent & bills at this tier "
             f"({(self.CREDIT_PRICING['Excellent'] - 1) * 100:+.0f}% at Excellent).</li>"
             f"<li><b>IRS seizure</b> after 8 quarters under 300 while still missing payments — game over.{irs}</li>"
-            "<li><b>Lower final score</b> — your retirement multiplier is 0.5 + score/2000.</li></ul>"
+            "<li><b>Lower final score multiplier</b> (0.50 for Very Poor up to 2.00 for Excellent 900+).</li></ul>"
             "<p><b style='color:#4ADE80'>How to rebuild it</b></p><ul>"
             "<li>Pay at least the <b>minimum due</b> shown on the dashboard every quarter <i>before</i> "
             "pressing Advance — and pay the <b>full statement</b> whenever you can: it's worth far more than "
@@ -679,6 +707,22 @@ class LifeGame:
 
     def pay_all(self):
         return self.pay_debt(self.card + self.loans)
+
+    def pay_card_all(self):
+        """Pay off the credit card balance only (loans are left on their own schedule)."""
+        if self.card <= 0:
+            return False, "You have no credit card debt"
+        if self.cash <= 0:
+            return False, "No cash available to pay with"
+        pay = min(self.card, self.cash)
+        self.card -= pay
+        self.cash -= pay
+        self.paid_this_qtr += pay
+        self.paid_card_this_qtr += pay
+        if self.card + self.loans == 0 and self.had_debt and self.cash >= 0:
+            self.unlock("debt_free")
+        self.add_log(f"Paid off {money(pay)} of credit card debt", "good")
+        return True, ""
 
     def retire_early(self):
         if not self.can_retire_early():
@@ -1410,8 +1454,8 @@ class LifeGame:
             "<p><b style='color:#F87171'>Danger zone</b></p><ul>"
             "<li>Below 450: no loans. Under 300 AND still missing payments for 8 quarters: the IRS seizes your "
             "assets (game over). Pay on time and the strikes count back down — recovery is always possible.</li>"
-            "<li>At retirement your net worth is multiplied by 0.5 + score/2000 — a 900 score is worth 30% more "
-            "than a 300 score.</li></ul>"
+            "<li>At retirement your net worth is multiplied by your credit multiplier (0.50 for Very Poor, "
+            "1.00 for Fair, up to 2.00 for 900+).</li></ul>"
             "<p><b style='color:#4ADE80'>Pro tip:</b> turn on <i>Charge essentials to card</i>, then pay the "
             "statement in full each quarter. You'll build credit every quarter and never pay card interest.</p>"
         )
@@ -2403,8 +2447,8 @@ TIPS = {
     "pay_min": ("Minimum covered", "No late or missed penalty this quarter. But a minimum payment grows your score "
                 "slowly — and not at all if your card is over 90% used. Pay in full for the biggest boost and zero "
                 "interest."),
-    "pay_all": ("Debt cleared", "Paying the whole statement gives the biggest credit boost and means no card interest "
-                "this quarter (grace period) — the smartest way to use a credit card."),
+    "pay_card_all": ("Card cleared", "Paying off your whole credit card brings its balance to zero: the biggest credit "
+                     "boost and no card interest this quarter (grace period). Loans stay on their own schedule."),
     "buy": ("Happiness refilled", "Leisure costs real money, so budget for it every quarter. Remember: 0 happiness for "
             "the start of burnout — 4 warnings and it's game over."),
     "autopay": ("Essentials on your card", "Rent, food and bills will now be charged to your card each quarter. Pay the "
@@ -2462,12 +2506,12 @@ class Tutorial:
             dict(title="Your first statement", target=lambda: d().bills, skip=lambda: g().min_due <= 0,
                  body="You used your card, so a <b>minimum payment</b> is now due. Pay at least this much "
                       "<b>before</b> advancing: on time = credit up, late = −20, missed = −50."),
-            dict(title="Pay your bill", target=lambda: d().b_all, wait=("pay_all", "pay_min", "pay"),
+            dict(title="Pay your bill", target=lambda: d().b_all, wait=("pay_card_all", "pay_min", "pay"),
                  skip=lambda: g().remaining_due() <= 0 or g().cash <= 0,
-                 body="<b>Pay off all</b> clears the card: the biggest credit boost <i>and</i> zero interest. "
+                 body="<b>Pay off card</b> clears the card: the biggest credit boost <i>and</i> zero interest. "
                       "<b>Pay minimum</b> only avoids a penalty — your score barely moves (not at all if the card "
                       "is over 90% used) and the rest keeps collecting interest.",
-                 hint="Try it: press Pay off all."),
+                 hint="Try it: press Pay off card."),
             dict(title="Activity log", target=lambda: d().log_box,
                  body="Every paycheck, bill, interest charge and decision is recorded here, newest first."),
             dict(title="Choose an amount", target=lambda: d().amount_box, on_show=lambda: d().amount.setValue(500),
@@ -2602,7 +2646,7 @@ class Tutorial:
         title, body = TIPS[key]
         d = self.ui.dash
         target = {"invest": d.b_invest, "withdraw": d.b_withdraw, "borrow": d.b_loan, "pay": d.b_pay,
-                  "pay_min": d.b_min, "pay_all": d.b_all, "buy": d.buy_btn, "autopay": d.bills,
+                  "pay_min": d.b_min, "pay_card_all": d.b_all, "buy": d.buy_btn, "autopay": d.bills,
                   "advance": d.log_box}.get(key)
 
         def done():
@@ -3120,7 +3164,7 @@ class Dashboard(QWidget):
         self.b_loan.clicked.connect(lambda: ui.act("borrow", lambda: ui.game.take_loan(self.amount.value())))
         self.b_pay.clicked.connect(lambda: ui.act("pay", lambda: ui.game.pay_debt(self.amount.value())))
         self.b_min.clicked.connect(lambda: ui.act("pay_min", ui.game.pay_minimum))
-        self.b_all.clicked.connect(lambda: ui.act("pay_all", ui.game.pay_all))
+        self.b_all.clicked.connect(lambda: ui.act("pay_card_all", ui.game.pay_card_all))
         for i, b in enumerate([self.b_invest, self.b_withdraw, self.b_loan, self.b_min, self.b_pay, self.b_all]):
             grid.addWidget(b, i // 3, i % 3)
         al.addLayout(grid)
@@ -3293,8 +3337,8 @@ class Dashboard(QWidget):
         self.b_pay.setEnabled(owed > 0 and g.cash > 0 and amt > 0)
         self.b_min.setText(f"Pay minimum\n{money(rem)}" if rem else "Minimum\ncovered")
         self.b_min.setEnabled(rem > 0 and g.cash > 0)
-        self.b_all.setText(f"Pay off all\n{money(owed)}")
-        self.b_all.setEnabled(owed > 0 and g.cash > 0)
+        self.b_all.setText(f"Pay off card\n{money(g.card)}")
+        self.b_all.setEnabled(g.card > 0 and g.cash > 0)
 
         lines = []
         for when, text, tone in reversed(g.log[-60:]):
@@ -3324,7 +3368,7 @@ class GameOverPage(QWidget):
         cl.addWidget(label("Your life in numbers", 32, W_BOLD))
         cl.addSpacing(6)
         self.rows = []
-        for _ in range(9):
+        for _ in range(11):
             r = QHBoxLayout()
             a = FitLabel("", 26, W_MED, T["muted"])
             b = FitLabel("", 30, W_BOLD, align=AL_R)
@@ -3341,6 +3385,9 @@ class GameOverPage(QWidget):
         self.score = FitLabel("", 96, W_BOLD, fg)
         sl.addWidget(self.score)
         self.ach = label("", 23, W_NORMAL, T["text2"], wrap=True, rich=True)
+
+        guide_btn = WrapButton("View Credit 101 Guide", "blue", 26, W_BOLD, height=88, icon="book")
+        guide_btn.clicked.connect(ui.show_guide)
 
         again = WrapButton("Play again — new credit card", "primary", 36, W_BOLD, height=116, icon="play")
         again.clicked.connect(ui.new_game)
@@ -3367,6 +3414,7 @@ class GameOverPage(QWidget):
             left.addWidget(self.sub)
             left.addWidget(score_card)
             left.addWidget(self.ach)
+            left.addWidget(guide_btn)
             left.addStretch(1)
             left.addWidget(again)
             left.addLayout(row)
@@ -3385,6 +3433,7 @@ class GameOverPage(QWidget):
             lay.addWidget(score_card)
             lay.addWidget(self.card)
             lay.addWidget(self.ach)
+            lay.addWidget(guide_btn)
             lay.addStretch(1)
             lay.addWidget(again)
             lay.addLayout(row)
@@ -3407,9 +3456,14 @@ class GameOverPage(QWidget):
             self.title.setText("<span style='font-weight:300'>Lost to </span><b>depression.</b>")
             self.badge.setText("GAME OVER")
             self.badge.set_tint("red")
-            self.sub.setText("Four quarters of burnout at zero happiness. Money matters — but so does living.")
+            if g.low_credit_turns > 0:
+                self.sub.setText("Burnout at zero happiness while facing IRS seizure warnings — the full IRS "
+                                 "penalty applies.")
+            else:
+                self.sub.setText("Four quarters of burnout at zero happiness. Money matters — but so does living.")
         nw = g.get_net_worth()
-        mult = f"×{0.5 + g.credit_score / 2000:.2f} credit multiplier" if good else f"−{money(g.DEATH_PENALTY)} penalty"
+        raw_score = g.raw_score()
+        mult = f"×{g.credit_multiplier():.2f}"
         data = [
             ("Age reached", str(g.age_years), T["text"]),
             ("Net worth", money(nw), T["green"] if nw >= 0 else T["red"]),
@@ -3419,12 +3473,21 @@ class GameOverPage(QWidget):
             ("Lifetime interest paid", money(g.stats["interest"]), T["red"]),
             ("Lifetime fees paid", money(g.stats["fees"]), T["red"]),
             ("Payments on time / late / missed", f"{g.stats['on_time']} / {g.stats['late']} / {g.stats['missed']}", T["text"]),
-            ("Score modifier", mult, T["gold"]),
+            ("Credit multiplier", mult, T["gold"]),
+            ("Score before penalty" if not good else "Net worth × multiplier", f"{raw_score:,} pts",
+             T["teal"] if good else T["amber"]),
         ]
-        for (a, b), (k, v, c) in zip(self.rows, data):
-            a.setText(k)
-            b.setText(v)
-            set_color(b, c)
+        if not good:
+            data.append(("Death penalty applied", f"−{money(g.death_penalty_amount())}", T["red"]))
+        for i, (a, b) in enumerate(self.rows):
+            used = i < len(data)
+            a.setVisible(used)
+            b.setVisible(used)
+            if used:
+                k, v, c = data[i]
+                a.setText(k)
+                b.setText(v)
+                set_color(b, c)
         self.score.setText(f"{g.final_score():,}")
         if g.achievements:
             names = "  ·  ".join(esc(g.ACHIEVEMENTS[k][0]) for k in g.achievements)
@@ -4080,7 +4143,7 @@ class GameUI(QWidget):
 
     def confirm_retire(self):
         g = self.game
-        mult = 0.5 + g.credit_score / 2000
+        mult = g.credit_multiplier()
         body = (f"<p>Retire now with a net worth of <b>{money(g.get_net_worth())}</b>?</p>"
                 f"<p>Your final score will be net worth × {mult:.2f} (credit multiplier) = "
                 f"<b>{int(g.get_net_worth() * mult):,}</b>.</p>")
