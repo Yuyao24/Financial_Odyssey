@@ -1,23 +1,30 @@
-"""The full game: the quarterly turn loop and the Credit 101 guide."""
+"""The full game: what happens when you sleep (the quarterly turn) and the Credit 101 guide."""
 
 from ..formatting import money
-from .events import LifeEvents
+from .daily import DailyLife
 
 
-class LifeGame(LifeEvents):
+class LifeGame(DailyLife):
     """A complete game from age 18 to 65.
 
     Built up in layers (each file adds one): GameConfig -> GameState -> CreditSystem -> Banking
-    -> MoneyMoves -> LifeEvents -> LifeGame."""
+    -> MoneyMoves -> LifeEvents -> DailyLife -> LifeGame."""
 
     def next_turn(self):
         if self.state != "main":
             return
         start_score = self.credit_score
+        log_mark = self.log_count
         self.credit_reasons = []
+        self._sleep(start_score)
+        self.night_report = self.log[-(self.log_count - log_mark):] if self.log_count > log_mark else []
+        if self.state == "main":
+            self._trigger_event()
 
+    def _sleep(self, start_score):
         self._evaluate_payments()
         self._charge_interest()
+        self._end_quarter_life()
 
         self.turns_played += 1
         self.age_months += 3
@@ -36,21 +43,15 @@ class LifeGame(LifeEvents):
         self.price_index *= 1 + self.INFLATION_QTR
         self.wage_index *= 1 + self.RAISE_QTR
 
-        earned = self.quarterly_income()
-        self.cash += earned
-        note = ""
         if self.layoff_turns > 0:
             self.layoff_turns -= 1
-            note = f" ({int(self.layoff_mult * 100)}% pay)"
             if self.layoff_turns == 0:
                 self.layoff_mult = 1.0
-        self.add_log(f"Paycheck +{money(earned)}{note}", "good")
-        if note and self.layoff_turns == 0:
-            self.add_log("Back on full salary next quarter!", "good")
+                self.add_log("Back on full salary from this quarter!", "good")
 
         ess = self.essentials_total()
-        on_card = self._forced_payment(ess, "Essentials")
-        self.add_log(f"Compulsory rent, groceries & bills -{money(ess)}" +
+        on_card = self._forced_payment(ess, "Rent & bills")
+        self.add_log(f"Compulsory rent & bills -{money(ess)}" +
                      (f" ({money(on_card)} on card)" if on_card else ""), "info")
 
         decay = self.happiness_decay()
@@ -70,6 +71,7 @@ class LifeGame(LifeEvents):
                              "invest" if change >= 0 else "bad")
 
         self._post_statement()
+        self._reset_quarter_life()
         self._milestones()
         self.snapshot()
 
@@ -104,7 +106,6 @@ class LifeGame(LifeEvents):
         self.delinquent = False
 
         self._credit_drop_popup(start_score)
-        self._trigger_event()
 
     # ---------------------------------------------------------- the guide --
     def credit_guide_html(self):
@@ -118,7 +119,7 @@ class LifeGame(LifeEvents):
             "with a brand-new credit card.</p>"
             "<p><b style='color:#FACC15'>How the score moves</b> — it only changes when a bill is due:</p><ul>"
             "<li>Each quarter your card and loans post a <b>statement</b> with a <b>minimum payment due</b> "
-            "(4% of the card balance, 8% of loans). It's shown on the dashboard. A small minimum keeps "
+            "(4% of the card balance, 8% of loans). It's shown in the Bank menu. A small minimum keeps "
             "your score safe — but whatever you don't pay keeps collecting interest.</li>"
             "<li><b style='color:#4ADE80'>On time</b> (paid at least the minimum before advancing) — how much "
             "it helps depends on <b>how much of your card you're still using</b> (utilisation):</li></ul>"
@@ -145,7 +146,7 @@ class LifeGame(LifeEvents):
             "<li><b>Credit-based pricing:</b> landlords, utilities and insurers check your score. Rent and bills "
             "cost 8% less at Excellent and up to 16% more at Very Poor — even if you never borrow a cent.</li>"
             "<li><b>Grace period:</b> pay the full statement balance and you pay no card interest that quarter.</li>"
-            f"<li><b>Overdraft:</b> if essentials exceed your cash, your bank balance can go down to "
+            f"<li><b>Overdraft:</b> if rent & bills exceed your cash, your bank balance can go down to "
             f"-{money(self.OVERDRAFT_LIMIT)} ({money(self.OVERDRAFT_FEE)} fee + 5% interest per quarter). "
             "Beyond that it goes on your card, and beyond your card limit it goes to <b>collections</b> "
             "(+15% fee and -50 credit).</li>"
@@ -156,6 +157,6 @@ class LifeGame(LifeEvents):
             "assets (game over). Pay on time and the strikes count back down — recovery is always possible.</li>"
             "<li>At retirement your net worth is multiplied by your credit multiplier (0.50 for Very Poor, "
             "1.00 for Fair, up to 2.00 for 900+).</li></ul>"
-            "<p><b style='color:#4ADE80'>Pro tip:</b> turn on <i>Charge essentials to card</i>, then pay the "
+            "<p><b style='color:#4ADE80'>Pro tip:</b> set <i>Pay with: Card</i> in town (or charge rent & bills to the card at home), then pay the "
             "statement in full each quarter. You'll build credit every quarter and never pay card interest.</p>"
         )

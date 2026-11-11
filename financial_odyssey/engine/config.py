@@ -12,7 +12,7 @@ class GameConfig:
     START_CASH = 800
     START_INCOME = 5200            # take-home pay per quarter at 18
     RENT_BASE = 2300               # compulsory
-    FOOD_BASE = 1000               # compulsory groceries
+    FOOD_BASE = 1000               # a regular grocery shop for the quarter
     UTIL_BASE = 550                # compulsory transport & utilities
     NO_CAR_SAVING = 150            # transit is a bit cheaper than running a car
     PET_COST = 120
@@ -20,8 +20,31 @@ class GameConfig:
     INFLATION_QTR = 0.0075         # ~3% / year
     RAISE_QTR = 0.0055             # ~2.2% / year (slower than inflation!)
 
-    HAPPY_COST = 900               # the ONE way to buy happiness on the dashboard
-    HAPPY_PTS = 20
+    # ---- Daily life (the town screen) ----------------------------------------
+    WEEKS_PER_QTR = 12             # time to spend each quarter: work, study, fun and rest
+    # key: (name, weeks, share of full pay, happiness)
+    WORK_PLANS = {
+        "part": ("Part-time", 4, 0.50, 0),
+        "full": ("Full-time", 8, 1.00, 0),
+        "over": ("Overtime", 10, 1.25, -10),
+    }
+    # key: (name, cost x FOOD_BASE, happiness)
+    GROCERY_PLANS = {
+        "budget": ("Budget basket", 0.75, -6),
+        "regular": ("Regular shop", 1.00, 0),
+        "fresh": ("Fresh & healthy", 1.35, 5),
+    }
+    TAKEOUT_MULT = 1.5             # skip the grocery store and you live on takeout ...
+    TAKEOUT_HAPPY = -8             # ... which costs more and feels worse
+    # key: (name, weeks, base cost, happiness). Each one can be done once per quarter.
+    FUN_ACTIVITIES = {
+        "park": ("Walk in the park", 1, 0, 2),
+        "movies": ("Movie & dinner", 1, 400, 8),
+        "concert": ("Concert night", 1, 700, 14),
+        "trip": ("Weekend trip", 2, 1300, 24),
+    }
+    REST_HAPPY = 1                 # happiness per unused week, gained when you sleep
+    STUDY_WEEKS = 3                # a certification at the college takes 3 weeks
 
     # ---- Banking ------------------------------------------------------------
     OVERDRAFT_LIMIT = 1000
@@ -77,7 +100,7 @@ class GameConfig:
     DEPRESSION_DEATH_PENALTY = 25_000
 
     EVENT_DECK = {
-        "festival": 3, "market": 2, "car": 2, "vacation": 2, "course": 3,
+        "festival": 3, "market": 2, "car": 2, "vacation": 2,
         "credit_quiz": 3, "layoff": 1, "medical": 2, "phone": 2, "rent_hike": 1,
         "side_hustle": 2, "wedding": 2, "tax_refund": 1, "limit_offer": 1,
         "identity_theft": 1, "pet": 1, "review": 2, "crypto": 1, "inheritance": 1,

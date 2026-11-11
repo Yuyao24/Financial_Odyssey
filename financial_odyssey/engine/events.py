@@ -28,8 +28,6 @@ class LifeEvents(MoneyMoves):
         return "festival"
 
     def _event_applies(self, key):
-        if key == "course":
-            return self.courses_taken < self.MAX_COURSES
         if key in ("accident",):
             return self.has_car
         if key == "pet":
@@ -114,19 +112,6 @@ class LifeEvents(MoneyMoves):
                     self.O(f"Work overtime instead  (+{money(w)}, -12 happiness)", None, 0, "good",
                            f"Worked overtime (+{money(w)})", cash=w, happiness=-12)]}
 
-    def _ev_course(self):
-        c = self.price(self.COURSE_BASE_COST * (1.35 ** self.courses_taken))
-        b = self.wage(self.COURSE_BONUS)
-        q = math.ceil(c / max(1, b * (1 - self.LIFESTYLE_CREEP)))
-        return {"title": "Career Certification",
-                "desc": f"Certification {self.courses_taken + 1} of {self.MAX_COURSES}: permanently raises your pay by "
-                        f"{money(b)}/qtr. After lifestyle creep it pays for itself in about {q} quarters.",
-                "options": [
-                    self.O(f"Pay {money(c)} cash", "cash", c, "cash", "Completed a certification", course=True),
-                    self.O(f"Charge {money(c)} to card", "card", c, "card", "Completed a certification (on card)", course=True),
-                    self.O(f"Student loan: {money(c)} at {self.loan_rate():.2%}/qtr", "loan", c, "loan",
-                           "Completed a certification (student loan)", course=True),
-                    self.O("Skip it", None, 0, "skip", "Skipped the certification")]}
 
     def _ev_credit_quiz(self):
         if not self.quiz_pool:

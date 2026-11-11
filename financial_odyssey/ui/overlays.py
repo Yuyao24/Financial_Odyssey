@@ -203,6 +203,9 @@ class SettingsOverlay(Overlay):
                           "to fit any window or monitor, with bars filling any leftover space.")
         b.addWidget(self._segmented([("Mobile  ·  vertical", "mobile", None), ("Desktop  ·  horizontal", "desktop", None)],
                                     win.settings["layout"], win.set_layout))
+        section("Animations", "Clouds, falling snow and leaves, the ferris wheel and your character walking around town.")
+        b.addWidget(self._segmented([("On", True, "play"), ("Off", False, None)],
+                                    win.settings.get("animations", True), win.set_animations))
         section("Display")
         fs = WrapButton("Exit fullscreen  (F11)" if win.isFullScreen() else "Enter fullscreen  (F11)",
                         "soft", 25, W_SEMI, height=80)

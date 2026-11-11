@@ -1,4 +1,4 @@
-"""Player money moves: invest, withdraw, borrow, pay debt, buy happiness, retire early."""
+"""Player money moves: invest, withdraw, borrow, pay debt, retire early."""
 
 import math
 
@@ -7,20 +7,9 @@ from .banking import Banking
 
 
 class MoneyMoves(Banking):
-    """Every action the player can take from the dashboard."""
+    """Every banking action the player can take from the Bank and Invest menus."""
 
     # --------------------------------------------------------- money moves --
-    def buy_happiness(self):
-        cost = self.happiness_cost()
-        if self.happiness >= 100:
-            return False, "Happiness is already full"
-        if self.cash < cost:
-            return False, f"Need {money(cost)} cash"
-        self.cash -= cost
-        self.happiness = min(100, self.happiness + self.HAPPY_PTS)
-        self.add_log(f"Spent {money(cost)} on leisure & hobbies. Happiness +{self.HAPPY_PTS}", "good")
-        return True, ""
-
     def invest(self, amount):
         if amount <= 0:
             return False, "Choose an amount above $0"

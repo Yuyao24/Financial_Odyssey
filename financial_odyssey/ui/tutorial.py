@@ -141,6 +141,16 @@ class CoachOverlay(QWidget):
 
 
 TIPS = {
+    "work": ("You worked", "Your paycheck arrived straight away. Work uses weeks of your quarter: whatever is left "
+             "can go to study, fun or rest."),
+    "groceries": ("Kitchen stocked", "That's food for the whole quarter. Fresh food costs more but makes you happier; "
+                  "skipping the store means expensive takeout."),
+    "fun": ("Feeling better", "Happiness drops every quarter. Fun costs weeks and usually money, so plan for it. "
+            "At 0 happiness you start burning out: 4 warnings and it's game over."),
+    "study": ("Certification earned", "Your pay is now higher every quarter, for good. Courses get pricier each "
+              "time, but they pay back over decades."),
+    "pay_card": ("Paying by card", "Shopping, fun and courses now go on your credit card. Pay the statement at the "
+                 "Bank each quarter and your credit score climbs. Leave it unpaid and it costs interest and credit."),
     "invest": ("You invested", "That money is now in the stock market. It grows about 5-6% a year on average, but can "
                "drop — and crash. Withdrawing before age 60 costs a 5% fee."),
     "withdraw": ("You withdrew investments", "Money moved from investments back to cash. Before age 60 you pay a 5% "
@@ -154,12 +164,10 @@ TIPS = {
                 "interest."),
     "pay_card_all": ("Card cleared", "Paying off your whole credit card brings its balance to zero: the biggest credit "
                      "boost and no card interest this quarter (grace period). Loans stay on their own schedule."),
-    "buy": ("Happiness refilled", "Leisure costs real money, so budget for it every quarter. Remember: 0 happiness for "
-            "the start of burnout — 4 warnings and it's game over."),
-    "autopay": ("Essentials on your card", "Rent, food and bills will now be charged to your card each quarter. Pay the "
-                "statement before advancing and your credit score climbs."),
-    "advance": ("A quarter passed", "You were paid, compulsory essentials were taken and a life event appeared. "
-                "Check the Activity log for every detail."),
+    "autopay": ("Rent on your card", "Rent & bills will now be charged to your card each night. Pay the statement "
+                "before you sleep and your credit score climbs."),
+    "advance": ("A new quarter", "Overnight you paid rent & bills, interest was added and your bill was judged. "
+                "The Activity menu shows everything that happened."),
 }
 
 
@@ -175,78 +183,94 @@ class Tutorial:
 
     # ---------------------------------------------------------------- steps --
     def _steps(self):
-        d = lambda: self.ui.dash                          # noqa: E731
+        p = lambda: self.ui.play                          # noqa: E731
         g = lambda: self.ui.game                          # noqa: E731
+
+        def building(key):
+            return lambda: self._building_rect(key)
+
+        def place(key, attr):
+            return lambda: getattr(p().town.panel.places[key], attr)
+
         return [
-            dict(title="Welcome to your financial life!", target=None,
-                 body="This is your dashboard. The next few quarters are a <b>guided tutorial</b> — "
-                      "nothing bad can happen yet.<br><br><b>How to tell what's clickable:</b> buttons have a "
-                      "raised edge and change when you hover. Flat cards and grey tags only show information. "
-                      "Faded buttons with a dashed outline are unavailable right now."),
-            dict(title="Time & net worth", target=lambda: d().header_info,
-                 body="Each turn is <b>3 months</b> (a quarter). You retire at 65 — or early once your "
-                      "<b>net worth</b> (cash + investments − debt) reaches $1,000,000."),
-            dict(title="Your credit score", target=lambda: d().credit_box,
-                 body="You start at <b>550</b>. It only rises when you pay bills on time, and drops when you "
-                      "don't. Higher scores mean cheaper loans and bigger card limits."),
-            dict(title="Happiness", target=lambda: d().happy_box,
-                 body="Work and life stress drain happiness every quarter. Each quarter at <b>0</b> is a burnout "
-                      "warning — 4 and you die of depression. Warnings only fade once you're back above "
-                      "<b>25</b>. The pink button refills it."),
-            dict(title="Your money", target=lambda: d().tiles_box,
-                 body="Cash, investments, credit card and loan balances, your pay, and your <b>compulsory</b> "
-                      "rent, food & bills. These tiles are information only."),
-            dict(title="Build credit from day one", target=lambda: d().bills, wait=("autopay",),
-                 body="Credit is built by borrowing and paying it back. Tick <b>Charge essentials to card</b>: "
-                      "your bills go on the card, and you pay the statement back each quarter.",
-                 hint="Try it: tick the highlighted checkbox."),
-            dict(title="Advance time", target=lambda: d().next_btn, wait=("advance",),
-                 body="Each press = one quarter: you get paid, essentials are charged and a life event happens.",
-                 hint="Try it: press Advance 3 months."),
+            dict(title="Welcome to your new life!", target=None,
+                 body="You're 18, with $800 and your first credit card. The next few quarters are a <b>guided "
+                      "tutorial</b> — nothing bad can happen yet.<br><br>The <b>town</b> is where you live day to day. "
+                      "The <b>menus</b> show your bank, credit and investments.<br><br>Buttons have an outline and "
+                      "change when you hover. Faded buttons with a dashed outline are unavailable right now."),
+            dict(title="Your status bar", target=lambda: p().hud,
+                 body="Age, money, credit and happiness at a glance. Each turn is one <b>quarter</b> (3 months), and "
+                      "you retire at 65 — or early once your net worth reaches $1,000,000."),
+            dict(title="Free time", target=lambda: p().hud.time_box,
+                 body="Every quarter you get <b>12 weeks</b>. Work, study and fun all use weeks. Weeks you don't use "
+                      "become rest when you sleep."),
+            dict(title="Go to work", target=building("office"), wait=("loc_office",),
+                 body="You only have $800 and groceries cost more than that. Time to earn some money!",
+                 hint="Try it: click the Office."),
+            dict(title="Pick your hours", target=place("office", "plans_box"), wait=("work",),
+                 body="<b>Full-time</b> pays your full salary and leaves 4 free weeks. Part-time leaves more time but "
+                      "pays half. Overtime pays more but costs happiness.",
+                 hint="Try it: work full-time."),
+            dict(title="Build credit as you shop", target=lambda: p().hud.pay, wait=("pay_card",),
+                 skip=lambda: g().pay_method == "card",
+                 body="Credit is built by <b>borrowing and paying it back</b>. Switch to <b>Card</b>: your purchases "
+                      "go on the card, and you pay it off at the Bank.",
+                 hint="Try it: choose Card."),
+            dict(title="Buy groceries", target=building("grocery"), wait=("loc_grocery",),
+                 body="You need food for the quarter.", hint="Try it: click the Grocery store."),
+            dict(title="Fill the fridge", target=place("grocery", "plans_box"), wait=("groceries",),
+                 body="Budget saves money but you'll feel it. Fresh food costs more and lifts your mood. If you skip "
+                      "shopping you'll pay extra for takeout.", hint="Try it: buy any basket."),
+            dict(title="Have some fun", target=building("fun"), wait=("loc_fun",),
+                 body="Happiness drops every quarter. At 0 you start burning out, and 4 quarters of burnout is fatal. "
+                      "The Fun Park is where you recharge.",
+                 hint="Try it: click the Fun Park."),
+            dict(title="Recharge", target=place("fun", "grid_box"), wait=("fun",),
+                 skip=lambda: all(g().fun_block_reason(k) for k in g().FUN_ACTIVITIES),
+                 body="A walk in the park is free. Bigger outings cost money but give more happiness.",
+                 hint="Try it: pick an activity."),
+            dict(title="Head home", target=building("home"), wait=("loc_home",),
+                 body=lambda: "When you're done for the quarter, go home and sleep." + (
+                     " (You're at full happiness right now, so fun can wait until it drops.)"
+                     if not g().fun_done else ""), hint="Try it: click Home."),
+            dict(title="Sleep", target=place("home", "sleep_btn"), wait=("advance",),
+                 body="Overnight, <b>rent & bills</b> are paid, interest is added and your card bill is judged. The "
+                      "checklist shows anything you forgot.", hint="Try it: press Sleep."),
             dict(title="Life events", target=lambda: self.ui.event_overlay.modal, wait=("choose",), state="event",
-                 body="Every quarter brings an event. <b style='color:#16A34A'>Green</b> = pay cash, "
+                 body="Each quarter brings an event. <b style='color:#16A34A'>Green</b> = pay cash, "
                       "<b style='color:#7C3AED'>purple</b> = credit card, <b style='color:#D97706'>amber</b> = loan, "
                       "<b style='color:#DC2626'>red</b> = risky, grey = skip. Faded options aren't affordable.",
                  hint="Try it: pick any option."),
-            dict(title="Your first statement", target=lambda: d().bills, skip=lambda: g().min_due <= 0,
-                 body="You used your card, so a <b>minimum payment</b> is now due. Pay at least this much "
-                      "<b>before</b> advancing: on time = credit up, late = −20, missed = −50."),
-            dict(title="Pay your bill", target=lambda: d().b_all, wait=("pay_card_all", "pay_min", "pay"),
-                 skip=lambda: g().remaining_due() <= 0 or g().cash <= 0,
-                 body="<b>Pay off card</b> clears the card: the biggest credit boost <i>and</i> zero interest. "
-                      "<b>Pay minimum</b> only avoids a penalty — your score barely moves (not at all if the card "
-                      "is over 90% used) and the rest keeps collecting interest.",
+            dict(title="Your first bill", target=lambda: p().nav["bank"], wait=("nav_bank",),
+                 skip=lambda: g().min_due <= 0,
+                 body="You used your card, so a <b>minimum payment</b> is now due (see the red dot). The menus are "
+                      "where you manage your money.", hint="Try it: open the Bank menu."),
+            dict(title="Pay your bill", target=lambda: p().menus["bank"].b_all, wait=("pay_card_all", "pay_min", "pay"),
+                 skip=lambda: g().remaining_due() <= 0 or g().cash <= 0 or p().menu != "bank",
+                 body="<b>Pay off card</b> clears it: the biggest credit boost <i>and</i> zero interest. Paying only "
+                      "the minimum avoids a penalty, but your score barely moves and the rest collects interest.",
                  hint="Try it: press Pay off card."),
-            dict(title="Activity log", target=lambda: d().log_box,
-                 body="Every paycheck, bill, interest charge and decision is recorded here, newest first."),
-            dict(title="Choose an amount", target=lambda: d().amount_box, on_show=lambda: d().amount.setValue(500),
-                 body="Type an amount or tap a preset. <b>Invest</b>, <b>Withdraw</b>, <b>Borrow</b> and "
-                      "<b>Pay debt</b> all use this amount."),
-            dict(title="Invest for the future", target=lambda: d().b_invest, wait=("invest",),
-                 skip=lambda: g().cash < 500,
-                 body="Investing grows your money over decades (about 5-6% a year on average) — but markets "
-                      "can crash. Withdrawing before age 60 costs 5%.", hint="Try it: press Invest $500."),
-            dict(title="Stay happy", target=lambda: d().buy_btn, wait=("buy",),
-                 skip=lambda: not d().buy_btn.isEnabled(),
-                 body="Happiness costs real money — budget for it every quarter.",
-                 hint="Try it: press Buy leisure & hobbies."),
-            dict(title="One more quarter", target=lambda: d().next_btn, wait=("advance",),
-                 body="Advance again. If a bill were still unpaid, you'd get a warning first.",
-                 hint="Try it: press Advance 3 months."),
-            dict(title="Credit workshop", target=lambda: self.ui.event_overlay.modal, wait=("choose",), state="event",
-                 body="Some events are quizzes that teach real credit rules. Answer correctly to win a gift card.",
-                 hint="Pick the answer you think is right."),
-            dict(title="Watch your score", target=lambda: d().credit_box,
-                 body="Paying on time is what moves this. During your first 5 years it can't pass 700 — "
-                      "lenders want a long history."),
-            dict(title="Settings, help & quitting", target=lambda: d().toolbar_box,
-                 body="<b>Settings</b>: light/dark theme, mobile/desktop layout, fullscreen and replaying this "
-                      "tutorial. <b>Stats</b> shows charts of your credit score, net worth and more over time. <b>Credit 101</b> opens the full guide. <b>Save & quit</b> any time — your "
-                      "game also saves automatically after every move."),
+            dict(title="More menus", target=lambda: p().nav_box,
+                 body="<b>Credit</b> shows your score and what tonight's payment will do. <b>Invest</b> grows spare "
+                      "cash. <b>Activity</b> lists everything that happened. <b>Insights</b> charts your whole life."),
+            dict(title="Back to town", target=lambda: p().nav["town"], wait=("nav_town",),
+                 skip=lambda: p().menu == "town",
+                 body="Each quarter: work, shop, have fun, pay your bill, then sleep.", hint="Try it: open Town."),
+            dict(title="Badges guide you", target=lambda: p().town.view,
+                 body="Red <b>!</b> marks things still to do, a gold <b>$</b> means a bill is due, a green tick means "
+                      "done, and the blue <b>z</b> on Home means you're ready to sleep."),
             dict(title="You're ready!", target=None,
-                 body="From now on events are real. Pay your bills, keep happiness up, invest what you can — "
-                      "and good luck!", last=True),
+                 body="From now on events are real. Pay your bills, keep happiness up, invest what you can — and "
+                      "good luck! You can replay this tutorial from Settings.", last=True),
         ]
+
+    def _building_rect(self, key):
+        view = self.ui.play.town.view
+        if not view.isVisible():
+            return None
+        r = view.building_rect(key).adjusted(-14, -22, 14, 14)
+        tl = view.mapTo(self.ui, QPoint(0, 0))
+        return r.translated(tl.x(), tl.y())
 
     # --------------------------------------------------------------- state ---
     @property
@@ -265,11 +289,12 @@ class Tutorial:
         win = self.ui.win
         win.settings["tutorial_done"] = True
         win.settings["tips_seen"] = sorted(set(win.settings.get("tips_seen", [])) |
-                                           {"invest", "pay_min", "buy", "autopay", "advance"})
+                                           {"work", "groceries", "fun", "pay_card", "pay_card_all",
+                                            "pay_min", "advance"})
         win.save_settings()
         win.save_game()
         self.coach.hide()
-        self.ui.dash.refresh()
+        self.ui.play.refresh()
 
     def next(self):
         g = self.ui.game
@@ -297,10 +322,12 @@ class Tutorial:
 
     def _blocked(self):
         ui = self.ui
-        return (ui.popup.isVisible() or ui.settings.isVisible() or ui.stack.currentWidget() is not ui.dash
+        return (ui.popup.isVisible() or ui.settings.isVisible() or ui.stack.currentWidget() is not ui.play
                 or ui.win.page != "game")
 
     def _rect_of(self, w):
+        if isinstance(w, QRectF):
+            return w
         if w is None or not w.isVisible():
             return None
         tl = w.mapTo(self.ui, QPoint(0, 0))
@@ -345,14 +372,20 @@ class Tutorial:
             buttons = [("Skip tutorial", "outline", self.finish), ("Skip this step", "soft", self.next)]
         else:
             buttons = [("Skip tutorial", "outline", self.finish), ("Next  →", "accent", self.next)]
-        self.coach.show_bubble(rect, counter, st["title"], st["body"], st.get("hint"), buttons, waiting)
+        body = st["body"]() if callable(st["body"]) else st["body"]
+        self.coach.show_bubble(rect, counter, st["title"], body, st.get("hint"), buttons, waiting)
 
     def _show_tip(self, key):
         title, body = TIPS[key]
-        d = self.ui.dash
-        target = {"invest": d.b_invest, "withdraw": d.b_withdraw, "borrow": d.b_loan, "pay": d.b_pay,
-                  "pay_min": d.b_min, "pay_card_all": d.b_all, "buy": d.buy_btn, "autopay": d.bills,
-                  "advance": d.log_box}.get(key)
+        p = self.ui.play
+        bank, inv, places = p.menus["bank"], p.menus["invest"], p.town.panel.places
+        target = {"invest": inv.b_invest, "withdraw": inv.b_withdraw, "borrow": bank.b_loan, "pay": bank.b_pay,
+                  "pay_min": bank.b_min if p.menu == "bank" else places["bank"].min_btn,
+                  "pay_card_all": bank.b_all if p.menu == "bank" else places["bank"].card_btn,
+                  "autopay": bank.bill if p.menu == "bank" else places["home"].autopay,
+                  "work": places["office"].plans_box, "groceries": places["grocery"].plans_box,
+                  "fun": places["fun"].grid_box, "study": places["college"].pay_btn, "pay_card": p.hud.pay,
+                  "advance": p.hud}.get(key)
 
         def done():
             seen = self.ui.win.settings.setdefault("tips_seen", [])

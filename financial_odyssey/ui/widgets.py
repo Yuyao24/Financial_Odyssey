@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -137,6 +138,68 @@ def draw_icon(p, kind, rect, color):
         r = s * 0.34
         p.drawArc(QRectF(cx - r, cy - r, 2 * r, 2 * r), 60 * 16, 290 * 16)
         p.drawPolyline([QPointF(cx + s * 0.06, cy - s * 0.46), QPointF(cx + s * 0.2, cy - s * 0.3), QPointF(cx + s * 0.02, cy - s * 0.2)])
+    elif kind == "town":
+        p.drawRect(QRectF(cx - s * 0.42, cy - s * 0.05, s * 0.3, s * 0.45))
+        p.drawRect(QRectF(cx - s * 0.12, cy - s * 0.42, s * 0.26, s * 0.82))
+        p.drawPolyline([QPointF(cx + s * 0.14, cy + s * 0.4), QPointF(cx + s * 0.14, cy - s * 0.02),
+                        QPointF(cx + s * 0.29, cy - s * 0.17), QPointF(cx + s * 0.44, cy - s * 0.02),
+                        QPointF(cx + s * 0.44, cy + s * 0.4)])
+        p.drawLine(QPointF(cx - s * 0.48, cy + s * 0.4), QPointF(cx + s * 0.48, cy + s * 0.4))
+    elif kind == "bank":
+        p.drawPolygon([QPointF(cx - s * 0.44, cy - s * 0.16), QPointF(cx, cy - s * 0.42), QPointF(cx + s * 0.44, cy - s * 0.16)])
+        for dx in (-0.28, 0.0, 0.28):
+            p.drawLine(QPointF(cx + s * dx, cy - s * 0.06), QPointF(cx + s * dx, cy + s * 0.26))
+        p.drawLine(QPointF(cx - s * 0.44, cy + s * 0.38), QPointF(cx + s * 0.44, cy + s * 0.38))
+    elif kind == "gauge":
+        r = s * 0.4
+        p.drawArc(QRectF(cx - r, cy - r + s * 0.12, 2 * r, 2 * r), -20 * 16, 220 * 16)
+        p.drawLine(QPointF(cx, cy + s * 0.12), QPointF(cx + s * 0.2, cy - s * 0.14))
+    elif kind == "growth":
+        p.drawPolyline([QPointF(cx - s * 0.42, cy + s * 0.3), QPointF(cx - s * 0.12, cy), QPointF(cx + s * 0.06, cy + s * 0.16),
+                        QPointF(cx + s * 0.42, cy - s * 0.24)])
+        p.drawPolyline([QPointF(cx + s * 0.16, cy - s * 0.26), QPointF(cx + s * 0.42, cy - s * 0.26),
+                        QPointF(cx + s * 0.42, cy)])
+    elif kind == "list":
+        for dy in (-0.28, 0.0, 0.28):
+            p.drawPoint(QPointF(cx - s * 0.36, cy + s * dy))
+            p.drawLine(QPointF(cx - s * 0.18, cy + s * dy), QPointF(cx + s * 0.42, cy + s * dy))
+    elif kind == "briefcase":
+        p.drawRoundedRect(QRectF(cx - s * 0.42, cy - s * 0.2, s * 0.84, s * 0.56), s * 0.08, s * 0.08)
+        p.drawRoundedRect(QRectF(cx - s * 0.16, cy - s * 0.38, s * 0.32, s * 0.18), s * 0.05, s * 0.05)
+        p.drawLine(QPointF(cx - s * 0.42, cy + s * 0.04), QPointF(cx + s * 0.42, cy + s * 0.04))
+    elif kind == "cart":
+        p.drawPolyline([QPointF(cx - s * 0.46, cy - s * 0.34), QPointF(cx - s * 0.3, cy - s * 0.34),
+                        QPointF(cx - s * 0.16, cy + s * 0.16), QPointF(cx + s * 0.34, cy + s * 0.16),
+                        QPointF(cx + s * 0.44, cy - s * 0.18), QPointF(cx - s * 0.24, cy - s * 0.18)])
+        p.drawEllipse(QPointF(cx - s * 0.1, cy + s * 0.34), s * 0.06, s * 0.06)
+        p.drawEllipse(QPointF(cx + s * 0.28, cy + s * 0.34), s * 0.06, s * 0.06)
+    elif kind == "ferris":
+        r = s * 0.3
+        p.drawEllipse(QPointF(cx, cy - s * 0.08), r, r)
+        for i in range(4):
+            a = math.radians(i * 45)
+            p.drawLine(QPointF(cx - math.cos(a) * r, cy - s * 0.08 - math.sin(a) * r),
+                       QPointF(cx + math.cos(a) * r, cy - s * 0.08 + math.sin(a) * r))
+        p.drawLine(QPointF(cx, cy - s * 0.08), QPointF(cx - s * 0.22, cy + s * 0.44))
+        p.drawLine(QPointF(cx, cy - s * 0.08), QPointF(cx + s * 0.22, cy + s * 0.44))
+    elif kind == "cap":
+        p.drawPolygon([QPointF(cx - s * 0.46, cy - s * 0.1), QPointF(cx, cy - s * 0.32), QPointF(cx + s * 0.46, cy - s * 0.1),
+                       QPointF(cx, cy + s * 0.12)])
+        p.drawPolyline([QPointF(cx - s * 0.26, cy + s * 0.02), QPointF(cx - s * 0.26, cy + s * 0.26),
+                        QPointF(cx, cy + s * 0.36), QPointF(cx + s * 0.26, cy + s * 0.26), QPointF(cx + s * 0.26, cy + s * 0.02)])
+    elif kind == "card":
+        p.drawRoundedRect(QRectF(cx - s * 0.44, cy - s * 0.3, s * 0.88, s * 0.6), s * 0.08, s * 0.08)
+        p.drawLine(QPointF(cx - s * 0.44, cy - s * 0.1), QPointF(cx + s * 0.44, cy - s * 0.1))
+        p.drawLine(QPointF(cx - s * 0.3, cy + s * 0.14), QPointF(cx - s * 0.08, cy + s * 0.14))
+    elif kind == "cash":
+        p.drawRoundedRect(QRectF(cx - s * 0.46, cy - s * 0.26, s * 0.92, s * 0.52), s * 0.06, s * 0.06)
+        p.drawEllipse(QPointF(cx, cy), s * 0.12, s * 0.12)
+    elif kind == "bed":
+        p.drawLine(QPointF(cx - s * 0.44, cy - s * 0.3), QPointF(cx - s * 0.44, cy + s * 0.34))
+        p.drawLine(QPointF(cx - s * 0.44, cy + s * 0.12), QPointF(cx + s * 0.44, cy + s * 0.12))
+        p.drawLine(QPointF(cx + s * 0.44, cy - s * 0.04), QPointF(cx + s * 0.44, cy + s * 0.34))
+        p.drawRoundedRect(QRectF(cx - s * 0.12, cy - s * 0.16, s * 0.56, s * 0.16), s * 0.06, s * 0.06)
+        p.drawEllipse(QPointF(cx - s * 0.26, cy - s * 0.06), s * 0.08, s * 0.08)
 
 
 class IconWidget(QWidget):
@@ -442,3 +505,135 @@ class Tile(Card):
         set_color(self.val, color)
         self.sub.setText(sub)
         set_color(self.sub, sub_color or T["muted"])
+
+
+class Segmented(Card):
+    """A pill-shaped switch: one option is highlighted, clicking another calls on_pick(value)."""
+
+    def __init__(self, options, on_pick, height=70, px=22):
+        super().__init__("segwrap")
+        self.setFixedHeight(height)
+        lay = QHBoxLayout(self)
+        pad = max(5, height // 11)
+        lay.setContentsMargins(pad, pad, pad, pad)
+        lay.setSpacing(pad)
+        self.buttons = {}
+        for text, value, icon in options:
+            btn = WrapButton(text, "seg", px, W_SEMI, height=height - 2 * pad, icon=icon, pad=12)
+            btn.clicked.connect(lambda _=False, v=value: on_pick(v))
+            lay.addWidget(btn)
+            self.buttons[value] = btn
+        self.value = None
+
+    def set_value(self, value):
+        if value != self.value:
+            self.value = value
+            for v, b in self.buttons.items():
+                b.set_variant("segon" if v == value else "seg")
+
+
+class AmountBox(QWidget):
+    """Amount picker: − / typed dollar amount / + and preset chips. on_change() is called on edits."""
+
+    def __init__(self, on_change, presets=(("$100", 100), ("$500", 500), ("$1k", 1000), ("$5k", 5000), ("All", None)),
+                 all_value=None, height=62):
+        super().__init__()
+        self.all_value = all_value or (lambda: 0)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        row.addWidget(label("Amount", 22, W_SEMI, T["muted"]))
+        minus = WrapButton("−", "chip", 32, W_BOLD, height=height, pad=4)
+        minus.setFixedWidth(66)
+        row.addWidget(minus)
+        self.spin = QSpinBox()
+        self.spin.setRange(0, 10_000_000)
+        self.spin.setSingleStep(100)
+        self.spin.setValue(500)
+        self.spin.setPrefix("$ ")
+        self.spin.setGroupSeparatorShown(True)
+        # NOTE: don't use NoButtons here - with a stylesheet Qt 6.12 collapses the text field;
+        # the arrow buttons are hidden via the stylesheet instead.
+        self.spin.setAlignment(AL_C)
+        self.spin.setFont(make_font(28, W_BOLD))
+        self.spin.setFixedSize(200, height)
+        self.spin.valueChanged.connect(lambda _: on_change())
+        row.addWidget(self.spin)
+        plus = WrapButton("+", "chip", 32, W_BOLD, height=height, pad=4)
+        plus.setFixedWidth(66)
+        row.addWidget(plus)
+        minus.clicked.connect(lambda: self.spin.stepBy(-1))
+        plus.clicked.connect(lambda: self.spin.stepBy(1))
+        for txt, val in presets:
+            chip = WrapButton(txt, "chip", 21, W_SEMI, height=height, pad=4)
+            chip.clicked.connect(lambda _=False, v=val: self.spin.setValue(max(0, int(self.all_value())) if v is None else v))
+            row.addWidget(chip)
+
+    def value(self):
+        return self.spin.value()
+
+    def setValue(self, v):
+        self.spin.setValue(v)
+
+
+class NavButton(QPushButton):
+    """Menu button with an icon and a label; shows a highlighted state and an optional red dot."""
+
+    def __init__(self, kind, text, vertical, height):
+        super().__init__()
+        self.kind, self.text_, self.vertical = kind, text, vertical
+        self.active = False
+        self.dot = False
+        self.setFixedHeight(height)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background:transparent; border:none;")
+
+    def set_state(self, active, dot):
+        if (active, dot) != (self.active, self.dot):
+            self.active, self.dot = active, dot
+            self.update()
+
+    def enterEvent(self, e):
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = float(self.width()), float(self.height())
+        r = QRectF(3, 3, w - 6, h - 6)
+        hover = self.underMouse()
+        if self.active:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(T["primary"]))
+            fg = T["primary_text"]
+        else:
+            p.setPen(QPen(QColor(T["text"] if hover else T["border_strong"]), 2))
+            p.setBrush(QColor(T["surface"] if hover else T["card"]))
+            fg = T["text"]
+        p.drawRoundedRect(r, 24, 24)
+        p.setFont(make_font(21 if self.vertical else 24, W_SEMI if not self.active else W_BOLD))
+        if self.vertical:                                     # icon above the label (mobile bar)
+            isz = h * 0.34
+            icon = QRectF(w / 2 - isz / 2, h * 0.16, isz, isz)
+            text = QRectF(0, h * 0.58, w, h * 0.32)
+            align = Qt.AlignmentFlag.AlignCenter
+        else:                                                 # icon left of the label (desktop rail)
+            isz = h * 0.4
+            icon = QRectF(28, h / 2 - isz / 2, isz, isz)
+            text = QRectF(28 + isz + 22, 0, w - isz - 70, h)
+            align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        draw_icon(p, self.kind, icon, fg)
+        p.setPen(QColor(fg))
+        p.drawText(text, align, self.text_)
+        if self.dot:
+            d = 11.0
+            c = QPointF(icon.right() + 4, icon.top() + 2) if self.vertical else QPointF(w - 36, h / 2)
+            p.setPen(QPen(QColor(T["card"]), 3))
+            p.setBrush(QColor(T["red"]))
+            p.drawEllipse(c, d, d)
+        p.end()
