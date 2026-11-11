@@ -69,6 +69,16 @@ class GameState(GameConfig):
         self.had_debt = False
         self.stats = {"interest": 0, "fees": 0, "on_time": 0, "late": 0, "missed": 0}
 
+        # daily life: what has been done in the town this quarter
+        self.weeks_used = 0
+        self.work_plan: str | None = None
+        self.groceries: str | None = None
+        self.fun_done: list[str] = []
+        self.studied = False
+        self.pay_method = "cash"         # how town purchases are paid: "cash" or "card"
+        self.log_count = 0               # total log lines ever written (for the overnight report)
+        self.night_report: list = []     # log lines from the last time you slept
+
     # ------------------------------------------------------------ save/load --
     SAVE_VERSION = 1
     _TRANSIENT = ("rng", "popups", "toasts")
@@ -125,6 +135,7 @@ class GameState(GameConfig):
 
     def add_log(self, text, tone="info"):
         self.log.append((f"{self.age_years} Q{self.quarter()}", text, tone))
+        self.log_count += 1
         if len(self.log) > 80:
             self.log.pop(0)
 
@@ -168,9 +179,10 @@ class GameState(GameConfig):
         return self.card / max(1, self.card_limit())
 
     def payment_quality(self):
-        """How this quarter's payment will be judged if you advance now (None = no bill)."""
+        """How this quarter's payment will be judged if you advance now (None = nothing to judge)."""
         if self.min_due <= 0:
-            return None
+            # no statement yet, but charging the card and clearing it in the same quarter still counts
+            return "full" if self.paid_card_this_qtr > 0 and self.card == 0 else None
         paid, due = self.paid_this_qtr, self.min_due
         if paid < due and not (self.card + self.loans == 0 and paid > 0):
             return "late" if paid > 0 else "missing"
@@ -247,7 +259,7 @@ class GameState(GameConfig):
     def essentials_breakdown(self):
         rent = self.price(self.RENT_BASE + self.rent_adj)
         bills = self.price(self.UTIL_BASE - (0 if self.has_car else self.NO_CAR_SAVING))
-        items = [("Rent", rent), ("Groceries", self.price(self.FOOD_BASE)), ("Transport & bills", bills)]
+        items = [("Rent", rent), ("Transport & bills", bills)]
         adj = int(round((rent + bills) * (self.credit_price_factor() - 1)))
         if adj:
             items.append(("Credit discount" if adj < 0 else "Credit premium", adj))
@@ -260,9 +272,6 @@ class GameState(GameConfig):
 
     def essentials_total(self):
         return sum(v for _, v in self.essentials_breakdown())
-
-    def happiness_cost(self):
-        return self.price(self.HAPPY_COST)
 
     def happiness_decay(self):
         return 12 + (8 * (self.age_years - 18)) // 47 - (3 if self.has_pet else 0)
@@ -326,5 +335,5 @@ class GameState(GameConfig):
                 self.popups.append({
                     "title": "You're a millionaire!", "kind": "success",
                     "body": "<p>Your net worth has passed <b>$1,000,000</b>.</p>"
-                            "<p>You can now <b>retire early</b> from the dashboard at any time while your net "
+                            "<p>You can now <b>retire early</b> from the Invest menu or at home at any time while your net "
                             "worth stays above $1M — or keep playing to grow your final score.</p>"})

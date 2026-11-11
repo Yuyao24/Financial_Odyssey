@@ -23,7 +23,8 @@ class MainWindow(QMainWindow):
         self.save_path = os.path.join(self.dir, "savegame.json")
         self.settings_path = os.path.join(self.dir, "settings.json")
 
-        self.settings = {"theme": "light", "layout": "mobile", "tutorial_done": False, "tips_seen": []}
+        self.settings = {"theme": "light", "layout": "mobile", "tutorial_done": False, "tips_seen": [],
+                         "animations": True}
         saved = read_json(self.settings_path) or {}
         if saved.get("theme") in THEMES:
             self.settings["theme"] = saved["theme"]
@@ -31,6 +32,8 @@ class MainWindow(QMainWindow):
             self.settings["layout"] = saved["layout"]
         if isinstance(saved.get("tutorial_done"), bool):
             self.settings["tutorial_done"] = saved["tutorial_done"]
+        if isinstance(saved.get("animations"), bool):
+            self.settings["animations"] = saved["animations"]
         if isinstance(saved.get("tips_seen"), list):
             self.settings["tips_seen"] = [str(x) for x in saved["tips_seen"]]
         self.game = self.load_game() or LifeGame()
@@ -146,3 +149,11 @@ class MainWindow(QMainWindow):
             self.fit_window()
         else:
             self.showFullScreen()
+
+    def set_animations(self, on):
+        if on != self.settings.get("animations", True):
+            self.settings["animations"] = on
+            self.save_settings()
+            if self.ui is not None:
+                self.ui.after_overlay()
+                self.ui.settings.open()

@@ -17,10 +17,13 @@ def play(game, quarters, pay=True):
                 break
         if game.state != "main":
             return
+        game.work("full")
+        game.buy_groceries("regular")
+        game.do_fun("park")
+        if game.happiness < 60:
+            game.do_fun("movies")
         if pay:
-            game.pay_all()
-        if game.happiness < 50:
-            game.buy_happiness()
+            game.pay_debt(max(0, min(game.card + game.loans, game.cash - game.essentials_total())))
         game.next_turn()
 
 
@@ -40,12 +43,72 @@ class TestNewGame(unittest.TestCase):
         self.assertEqual(g.state, "event")
 
 
+class TestDailyLife(unittest.TestCase):
+    def setUp(self):
+        self.g = LifeGame(seed=20)
+        self.g.start()
+
+    def test_work_pays_once_per_quarter_and_uses_weeks(self):
+        g = self.g
+        cash = g.cash
+        self.assertTrue(g.work("full")[0])
+        self.assertEqual(g.cash, cash + g.quarterly_income())
+        self.assertEqual(g.weeks_left(), g.WEEKS_PER_QTR - 8)
+        self.assertFalse(g.work("part")[0])
+
+    def test_not_enough_weeks(self):
+        g = self.g
+        g.work("over")                      # 10 of 12 weeks
+        self.assertFalse(g.study()[0])      # needs 3
+        self.assertFalse(g.do_fun("trip")[0] and g.do_fun("park")[0])
+
+    def test_groceries_need_cash_or_card(self):
+        g = self.g
+        g.cash = 100
+        self.assertFalse(g.buy_groceries("regular")[0])
+        g.set_pay_method("card")
+        self.assertTrue(g.buy_groceries("regular")[0])
+        self.assertEqual(g.card, g.grocery_cost("regular"))
+        self.assertIn("first_swipe", g.achievements)
+
+    def test_skipping_groceries_means_takeout(self):
+        g = self.g
+        g.cash = 50_000
+        happy = g.happiness
+        g.next_turn()
+        self.assertTrue(any("takeout" in text for _, text, _ in g.night_report))
+        self.assertLess(g.happiness, happy)
+
+    def test_quarter_state_resets_after_sleep(self):
+        g = self.g
+        g.work("full")
+        g.buy_groceries("budget")
+        g.do_fun("park")
+        g.next_turn()
+        self.assertEqual((g.weeks_used, g.work_plan, g.groceries, g.fun_done), (0, None, None, []))
+
+    def test_fun_once_per_quarter(self):
+        g = self.g
+        g.happiness = 50
+        self.assertTrue(g.do_fun("park")[0])
+        self.assertFalse(g.do_fun("park")[0])
+
+    def test_certification_raises_pay(self):
+        g = self.g
+        g.cash = 50_000
+        pay = g.quarterly_income()
+        self.assertTrue(g.study()[0])
+        self.assertGreater(g.quarterly_income(), pay)
+        self.assertEqual(g.courses_taken, 1)
+
+
 class TestCredit(unittest.TestCase):
     def test_missed_payment_costs_50(self):
         g = LifeGame(seed=2)
         g.start()
         g.min_due = 100
         g.card = 1000
+        g.cash = 50_000                     # rent is covered, so only the missed payment counts
         before = g.credit_score
         g.next_turn()
         self.assertEqual(g.credit_score, before - 50)

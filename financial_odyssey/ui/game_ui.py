@@ -6,9 +6,9 @@ from PyQt6.QtWidgets import QStackedWidget, QWidget
 from ..engine import LifeGame
 from ..formatting import money
 from .overlays import EventOverlay, PopupOverlay, SettingsOverlay, Toast
-from .pages.dashboard import Dashboard
 from .pages.game_over import GameOverPage
 from .pages.insights import InsightsPage
+from .pages.play import PlayPage
 from .pages.start import StartPage
 from .theme import CANVAS, T, build_stylesheet, make_font
 from .tutorial import Tutorial
@@ -32,10 +32,10 @@ class GameUI(QWidget):
         self.stack = QStackedWidget(self)
         self.stack.setGeometry(0, 0, cw, ch)
         self.start_page = StartPage(self, desktop)
-        self.dash = Dashboard(self, desktop)
+        self.play = PlayPage(self, desktop)
         self.over_page = GameOverPage(self, desktop)
         self.insights = InsightsPage(self, desktop)
-        for w in (self.start_page, self.dash, self.over_page, self.insights):
+        for w in (self.start_page, self.play, self.over_page, self.insights):
             self.stack.addWidget(w)
 
         self.event_overlay = EventOverlay(self, self.choose, desktop)
@@ -77,6 +77,7 @@ class GameUI(QWidget):
         self.win.page = "game"
         self.popup_queue.clear()
         self.event_overlay.hide()
+        self.play.wake_up()
         if not self.win.settings.get("tutorial_done"):
             self.tut.start()
         self.after()
@@ -128,7 +129,7 @@ class GameUI(QWidget):
 
     def after_overlay(self):
         if self.win.page == "game" and self.game.state in ("main", "event"):
-            self.dash.refresh()
+            self.play.refresh()
         self._pump()
         self.tut.refresh()
 
@@ -149,24 +150,37 @@ class GameUI(QWidget):
         self.act("choose", lambda: self.game.choose_option(idx))
 
     def advance(self):
+        """Sleep at home. If anything important is undone, ask first."""
         g = self.game
-        rem = g.remaining_due()
-        if g.state == "main" and rem > 0:
-            hit = "LATE payment (−20 credit)" if g.paid_this_qtr else "MISSED payment (−50 credit)"
-            can_pay = g.cash >= rem
-            body = (f"<p>Your minimum payment of <b>{money(g.min_due)}</b> isn't covered yet — "
-                    f"<b>{money(rem)}</b> is still due.</p>"
-                    f"<p>If you advance now it counts as a <b style='color:{T['red']}'>{hit}</b>.</p>"
-                    + ("" if can_pay else f"<p style='color:{T['red']}'>You don't have enough cash to cover it. "
-                       "Consider withdrawing investments or taking a cheaper bank loan to pay the card.</p>"))
-            self.popup_queue.insert(0, {"title": "Payment not covered", "body": body, "kind": "warning",
-                                        "buttons": [(f"Pay {money(rem)} now", "green", self._pay_and_advance if can_pay else False),
-                                                    ("Advance anyway", "red", self._advance_now),
-                                                    ("Cancel", "soft", None)]})
-            self.tut.coach.hide()
-            self._pump()
+        if g.state != "main":
             return
-        self._advance_now()
+        rem = g.remaining_due()
+        warn = []
+        if rem > 0:
+            hit = "a LATE payment (−20 credit)" if g.paid_this_qtr else "a MISSED payment (−50 credit)"
+            warn.append(f"<b>{money(rem)}</b> of your minimum payment is still due: sleeping now counts as "
+                        f"<b style='color:{T['red']}'>{hit}</b>.")
+        if not g.work_plan:
+            warn.append("You haven't <b>worked</b> this quarter, so there's no paycheck.")
+        if not g.groceries:
+            warn.append(f"No <b>groceries</b>: you'll live on takeout ({money(g.takeout_cost())}, "
+                        f"{g.TAKEOUT_HAPPY} happiness).")
+        short = g.essentials_total() - g.cash
+        if not g.essentials_on_card and short > 0:
+            warn.append(f"You're <b>{money(short)} short</b> for tonight's rent & bills: it'll go into overdraft, "
+                        "onto your card or to collections.")
+        if not warn:
+            self._advance_now()
+            return
+        can_pay = rem > 0 and g.cash >= rem
+        buttons = []
+        if rem > 0:
+            buttons.append((f"Pay {money(rem)} & sleep", "green", self._pay_and_advance if can_pay else False))
+        buttons += [("Sleep anyway", "red" if rem > 0 else "primary", self._advance_now), ("Not yet", "soft", None)]
+        body = "<p>Before you go to bed:</p><ul>" + "".join(f"<li>{w}</li>" for w in warn) + "</ul>"
+        self.popup_queue.insert(0, {"title": "Go to sleep?", "body": body, "kind": "warning", "buttons": buttons})
+        self.tut.coach.hide()
+        self._pump()
 
     def _pay_and_advance(self):
         self.game.pay_minimum()
@@ -174,6 +188,7 @@ class GameUI(QWidget):
 
     def _advance_now(self):
         self.game.next_turn()
+        self.play.wake_up()
         self.tut.notify("advance")
         self.after()
 
@@ -214,8 +229,8 @@ class GameUI(QWidget):
             self.switch_page(self.over_page)
             self.win.delete_save()
         elif g.state in ("main", "event"):
-            self.switch_page(self.dash)
-            self.dash.refresh()
+            self.switch_page(self.play)
+            self.play.refresh()
             if g.state == "event":
                 self.event_overlay.show_event(g)
             else:

@@ -11,11 +11,13 @@ class Banking(CreditSystem):
 
     # ----------------------------------------------------------- quarter ---
     def _evaluate_payments(self):
-        if self.min_due <= 0:
+        q = self.payment_quality()
+        if q is None:
             return
         paid, due = self.paid_this_qtr, self.min_due
-        q = self.payment_quality()
-        if q in ("full", "more", "minimum", "maxed"):
+        if due <= 0:
+            self._credit("on_time", f"Used your card and paid it off in full ({money(paid)} paid)", quality="full")
+        elif q in ("full", "more", "minimum", "maxed"):
             self._credit("on_time", f"On-time payment, {self.QUALITY_LABEL[q]} ({money(paid)} paid, "
                                     f"{money(due)} minimum, card {self.utilization():.0%} used)", quality=q)
         elif paid > 0:

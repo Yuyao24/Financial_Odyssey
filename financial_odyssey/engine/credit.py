@@ -104,7 +104,7 @@ class CreditSystem(GameState):
             f"<li><b>IRS seizure</b> after 8 quarters under 300 while still missing payments — game over.{irs}</li>"
             "<li><b>Lower final score multiplier</b> (0.50 for Very Poor up to 2.00 for Excellent 900+).</li></ul>"
             "<p><b style='color:#4ADE80'>How to rebuild it</b></p><ul>"
-            "<li>Pay at least the <b>minimum due</b> shown on the dashboard every quarter <i>before</i> "
+            "<li>Pay at least the <b>minimum due</b> shown in the Bank menu every quarter <i>before</i> "
             "pressing Advance — and pay the <b>full statement</b> whenever you can: it's worth far more than "
             "the minimum, and a card kept over 90% full earns nothing.</li>"
             "<li>Paying something but less than the minimum is still <b>late (-20)</b>; paying nothing is "

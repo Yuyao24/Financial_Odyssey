@@ -36,12 +36,12 @@ class StartPage(QWidget):
         quit_.clicked.connect(win.close)
         top.addWidget(quit_)
 
-        hero = label("<span style='font-weight:300'>Earn, spend and </span><b>borrow</b>"
+        hero = label("<span style='font-weight:300'>Work, shop and </span><b>borrow</b>"
                      "<span style='font-weight:300'> your way from </span><b>18 to 65</b>",
                      104 if desktop else 84, W_NORMAL, wrap=True, rich=True)
-        sub = label("Your first credit card was just approved. Build your credit, keep your happiness up "
-                    "and retire without going broke.", 30, W_NORMAL, T["muted"], wrap=True)
-        facts = label("47 years   ·   188 quarters   ·   25 kinds of life events   ·   13 achievements",
+        sub = label("Your first credit card was just approved. Live your life around town, build your credit, "
+                    "keep your happiness up and retire without going broke.", 30, W_NORMAL, T["muted"], wrap=True)
+        facts = label("47 years   ·   188 quarters   ·   6 places in town   ·   24 kinds of life events",
                       23, W_SEMI, T["dim"], wrap=True)
 
         rules = Card("card")
@@ -50,11 +50,12 @@ class StartPage(QWidget):
         rl.setSpacing(18)
         rl.addWidget(label("How it works", 34, W_BOLD))
         for head, text in [
-            ("Bills come due.", "Card and loan balances post a minimum payment. Pay it before advancing to grow your credit."),
-            ("Happiness drains.", "Buy leisure to refill it. Each quarter at 0 is a burnout warning; 4 and you die of "
-             "depression. Warnings only fade once happiness is back above 25."),
-            ("Credit = cheaper life.", "Higher scores mean lower interest, bigger limits — even cheaper rent (capped at 700 for 5 years)."),
-            ("Costs rise faster than pay.", "Rent, groceries and bills are compulsory, so certifications and investing matter."),
+            ("Live day to day.", "Each quarter you get 12 weeks. Work at the Office, buy groceries, have fun at the "
+             "Fun Park or study at the College — then sleep at Home."),
+            ("Bills come due.", "Card and loan balances post a minimum payment. Pay it at the Bank before you sleep to "
+             "grow your credit."),
+            ("Happiness drains.", "Each quarter at 0 is a burnout warning; 4 and you die of depression."),
+            ("Credit = cheaper life.", "Higher scores mean lower interest, bigger limits — even cheaper rent."),
             ("$1,000,000 net worth", "lets you retire early. Otherwise you retire at 65."),
         ]:
             rl.addWidget(label(f"<b>{esc(head)}</b> <span style='color:{T['muted']}'>{esc(text)}</span>",
